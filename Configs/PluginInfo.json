@@ -1,6 +1,6 @@
 {
-  "FullName": "PluginTemplate",
-  "Description": "A Super simple Plugin that actually works",
-  "Version": 1.0,
+  "FullName": "CousinCustomRates",
+  "Description": "Allow to changes rates while the server is running",
+  "Version": 1,
   "MinApiVersion": 1.18
 }

@@ -1,84 +1,52 @@
 {
-  "General": {
-    "Debug": true,
-    "IgnoreInvRepairRequirements": true
-  },
-  "Debug": {
-    "PluginTemplate": true,
-    "Permissions": true,
-    "Points": true
-  },
-  "Commands": {
-    "RepairItemCMD": "/repairitems",
-    "DeletePlayerCMD": "/deleteplayer"
-  },
-  "Messages": {
-    "RepairItemsMSG": "All items has been repaired. {}",
-    "PermErrorMSG": "You don't have permission to use this command.",
-    "PointsErrorMSG": "Not enough points."
-  },
-  "DiscordBot": {
-    "GuildID": "",
-    "ChannelID": "",
-    "BotToken": "",
-    "Webhook": "",
-    "BotImageURL": ""
-  },
-  "PluginDBSettings": {
-    "UseMySQL": false,
-    "Host": "",
-    "User": "",
-    "Password": "",
-    "Database": "",
-    "TableName": "PluginTemplate",
-    "Port": 3306,
-    "MysqlSSLMode": -1,
-    "MysqlTLSVersion": "",
-    "SQLiteDatabasePath": ""
-  },
-  "PermissionsDBSettings": {
-    "Enabled": false,
-    "UseMySQL": false,
-    "Host": "",
-    "User": "",
-    "Password": "",
-    "Database": "",
-    "TableName": "Players",
-    "UniqueIDField": "EOS_Id",
-    "PermissionGroupField": "PermissionGroups",
-    "Port": 3306,
-    "MysqlSSLMode": -1,
-    "MysqlTLSVersion": "",
-    "SQLiteDatabasePath": ""
-  },
-  "PointsDBSettings": {
-    "Enabled": false,
-    "UseMySQL": false,
-    "Host": "",
-    "User": "",
-    "Password": "",
-    "Database": "",
-    "TableName": "ArkShopPlayers",
-    "UniqueIDField": "EosId",
-    "PointsField": "Points",
-    "TotalSpentField": "TotalSpent",
-    "Port": 3306,
-    "MysqlSSLMode": -1,
-    "MysqlTLSVersion": "",
-    "SQLiteDatabasePath": ""
-  },
-  "PermissionGroups": {
-    "Default": {
-      "Priority": 99
+  "RatePresets": {
+    "weekend_rates": {
+      "BroadcastMessage": "Weekend rates are now ACTIVE! Enjoy the boosted rates!",
+      "Discord_Webhook": "",
+      "Discord_Embed": {
+        "Title": "⚡ Weekend Rates Activated",
+        "Description": "Server is now running boosted weekend rates!",
+        "Color": 3066993,
+        "Footer": "CousinCustomRates"
+      },
+      "TamingSpeedMultiplier": 10.0,
+      "XPMultiplier": 10.0,
+      "HarvestAmountMultiplier": 20.0,
+      "BabyMatureSpeedMultiplier": 50.0,
+      "EggHatchSpeedMultiplier": 50.0
     },
-    "Admins": {
-      "Priority": 1,
-      "Commands": {
-        "RepairItemCMD": {
-          "Enabled": false,
-          "Cost": 0
-        }
-      }
+    "normal_rates": {
+      "BroadcastMessage": "Normal rates are now active.",
+      "Discord_Webhook": "",
+      "Discord_Embed": {
+        "Title": "📋 Normal Rates Restored",
+        "Description": "Server has returned to standard rates.",
+        "Color": 10070709,
+        "Footer": "CousinCustomRates"
+      },
+      "TamingSpeedMultiplier": 5.0,
+      "XPMultiplier": 5.0,
+      "HarvestAmountMultiplier": 10.0,
+      "BabyMatureSpeedMultiplier": 25.0,
+      "EggHatchSpeedMultiplier": 25.0
     }
+  },
+  "Schedule": {
+    "Enabled": false,
+    "CheckIntervalSeconds": 60,
+    "Rules": [
+      {
+        "Preset": "weekend_rates",
+        "Days": ["Friday", "Saturday", "Sunday"],
+        "StartHour": 18,
+        "EndHour": 23
+      },
+      {
+        "Preset": "normal_rates",
+        "Days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+        "StartHour": 0,
+        "EndHour": 17
+      }
+    ]
   }
 }

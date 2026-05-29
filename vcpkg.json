@@ -1,5 +1,5 @@
 {
-  "name": "asa-api-plugin-template",
+  "name": "asa-api-plugin-cousincustomrates",
   "version": "1.0.0",
   "dependencies": [
     "fmt"

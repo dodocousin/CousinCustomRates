@@ -1,84 +1,119 @@
 {
-  "General": {
-    "Debug": true,
-    "IgnoreInvRepairRequirements": true
-  },
-  "Debug": {
-    "PluginTemplate": true,
-    "Permissions": true,
-    "Points": true
-  },
-  "Commands": {
-    "RepairItemCMD": "/repairitems",
-    "DeletePlayerCMD": "/deleteplayer"
-  },
-  "Messages": {
-    "RepairItemsMSG": "All items has been repaired. {}",
-    "PermErrorMSG": "You don't have permission to use this command.",
-    "PointsErrorMSG": "Not enough points."
-  },
-  "DiscordBot": {
-    "GuildID": "",
-    "ChannelID": "",
-    "BotToken": "",
-    "Webhook": "",
-    "BotImageURL": ""
-  },
-  "PluginDBSettings": {
-    "UseMySQL": false,
-    "Host": "",
-    "User": "",
-    "Password": "",
-    "Database": "",
-    "TableName": "PluginTemplate",
-    "Port": 3306,
-    "MysqlSSLMode": -1,
-    "MysqlTLSVersion": "",
-    "SQLiteDatabasePath": ""
-  },
-  "PermissionsDBSettings": {
-    "Enabled": false,
-    "UseMySQL": false,
-    "Host": "",
-    "User": "",
-    "Password": "",
-    "Database": "",
-    "TableName": "Players",
-    "UniqueIDField": "EOS_Id",
-    "PermissionGroupField": "PermissionGroups",
-    "Port": 3306,
-    "MysqlSSLMode": -1,
-    "MysqlTLSVersion": "",
-    "SQLiteDatabasePath": ""
-  },
-  "PointsDBSettings": {
-    "Enabled": false,
-    "UseMySQL": false,
-    "Host": "",
-    "User": "",
-    "Password": "",
-    "Database": "",
-    "TableName": "ArkShopPlayers",
-    "UniqueIDField": "EosId",
-    "PointsField": "Points",
-    "TotalSpentField": "TotalSpent",
-    "Port": 3306,
-    "MysqlSSLMode": -1,
-    "MysqlTLSVersion": "",
-    "SQLiteDatabasePath": ""
-  },
-  "PermissionGroups": {
-    "Default": {
-      "Priority": 99
+  // ===========================================================================
+  // CousinCustomRates — config.json
+  //
+  // RCON commands:
+  //   changerates <preset_name>      — activate a preset immediately
+  //   CousinCustomRates.Reload       — hot-reload this file without restart
+  // ===========================================================================
+
+  "RatePresets": {
+
+    // -------------------------------------------------------------------------
+    // Define as many named presets as you like.
+    // Each preset is identified by its JSON key (e.g. "weekend_rates").
+    // Activate via RCON: changerates weekend_rates
+    // -------------------------------------------------------------------------
+
+    "weekend_rates": {
+
+      // Message broadcast in-game to ALL players when this preset activates.
+      // Leave as "" to skip the broadcast entirely.
+      "BroadcastMessage": "Weekend rates are now ACTIVE! Enjoy the boosted rates!",
+
+      // Full Discord webhook URL for this preset's notification.
+      // Leave as "" to skip Discord entirely — no errors will occur.
+      "Discord_Webhook": "https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN",
+
+      // Optional rich embed configuration for the Discord notification.
+      // If this block is absent, a plain text message is sent instead.
+      // All fields below are optional (sensible defaults apply).
+      "Discord_Embed": {
+        "Title":       "⚡ Weekend Rates Activated",
+        "Description": "Server is now running boosted weekend rates!",
+
+        // Decimal RGB color for the embed's left-side color bar.
+        // Convert hex colors at: https://www.binaryhexconverter.com/hex-to-decimal-converter
+        // Examples: 3066993 = green | 15158332 = red | 16776960 = yellow | 3447003 = blue
+        "Color":  3066993,
+
+        "Footer": "CousinCustomRates"
+      },
+
+      // ---- Rate Multipliers ------------------------------------------------
+      // These are applied directly to the live AShooterGameMode instance.
+      "TamingSpeedMultiplier":     10.0,
+      "XPMultiplier":              10.0,
+      "HarvestAmountMultiplier":   20.0,
+      "BabyMatureSpeedMultiplier": 50.0,
+      "EggHatchSpeedMultiplier":   50.0
     },
-    "Admins": {
-      "Priority": 1,
-      "Commands": {
-        "RepairItemCMD": {
-          "Enabled": false,
-          "Cost": 0
-        }
-      }
+
+    "normal_rates": {
+      "BroadcastMessage": "Normal rates are now active.",
+      "Discord_Webhook":  "",
+      "Discord_Embed": {
+        "Title":       "📋 Normal Rates Restored",
+        "Description": "Server has returned to standard rates.",
+        "Color":       10070709,
+        "Footer":      "CousinCustomRates"
+      },
+      "TamingSpeedMultiplier":     5.0,
+      "XPMultiplier":              5.0,
+      "HarvestAmountMultiplier":   10.0,
+      "BabyMatureSpeedMultiplier": 25.0,
+      "EggHatchSpeedMultiplier":   25.0
     }
+
+    // Add more presets here following the same structure...
+  },
+
+  // ===========================================================================
+  // Schedule (OPTIONAL)
+  //
+  // Automatically activates presets based on the current day and hour.
+  // Set "Enabled" to true to start the timer. Set to false to disable
+  // completely — no timer is registered and there is zero overhead.
+  //
+  // TIMEZONE: Uses the SERVER machine's local OS timezone.
+  //
+  // RULE MATCHING:
+  //   Rules are checked in ORDER. The FIRST rule whose Days list contains the
+  //   current weekday AND whose [StartHour, EndHour] range (inclusive) contains
+  //   the current hour (0-23, 24h format) is applied.
+  //   If the matching preset is already active, nothing happens.
+  //   If NO rule matches the current time, the active preset is left unchanged.
+  //
+  // OVERNIGHT RANGES:
+  //   StartHour must be <= EndHour. For overnight coverage (e.g. 22:00-02:00)
+  //   use two separate rules: one for 22-23 and one for 0-2.
+  // ===========================================================================
+  "Schedule": {
+    "Enabled": false,
+
+    // How often (in seconds) to re-evaluate the schedule rules.
+    // Minimum meaningful value is 60 (once per minute).
+    "CheckIntervalSeconds": 60,
+
+    "Rules": [
+      {
+        // Which preset to activate when this rule matches
+        "Preset": "weekend_rates",
+
+        // Which days of the week this rule applies to
+        // Valid values: "Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"
+        "Days": ["Friday", "Saturday", "Sunday"],
+
+        // Active from 18:00 to 23:59 (6 PM to 11:59 PM) — hour range is INCLUSIVE
+        "StartHour": 18,
+        "EndHour":   23
+      },
+      {
+        "Preset": "normal_rates",
+        "Days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+        "StartHour": 0,
+        "EndHour":   17
+      }
+    ]
   }
 }

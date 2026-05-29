@@ -1,468 +1,334 @@
+#pragma once
 
 #include <fstream>
-
-
-static bool startsWith(const std::string& str, const std::string& prefix)
-{
-	return str.size() >= prefix.size() && str.compare(0, prefix.size(), prefix) == 0;
-}
-
-void FetchMessageFromDiscordCallback(bool success, std::string results)
-{
-	//Log::GetLog()->warn("Function: {}", __FUNCTION__);
-
-	if (success)
-	{
-		if(results.empty()) return;
-
-		try
-		{
-			nlohmann::json resObj = nlohmann::json::parse(results)[0];
-
-			if (resObj.is_null())
-			{
-				Log::GetLog()->warn("resObj is null");
-				return;
-			}
-
-			auto globalName = resObj["author"]["global_name"];
-
-			// if not sent by bot
-			if (resObj.contains("bot") && globalName.is_null())
-			{
-				Log::GetLog()->warn("the sender is bot");
-				return;
-			}
-
-			std::string msg = resObj["content"].get<std::string>();
-			
-			if (!startsWith(msg, "!"))
-			{
-				Log::GetLog()->warn("message not startswith !");
-				return;
-			}
-
-			if (PluginTemplate::lastMessageID == resObj["id"].get<std::string>()) return;
-			
-			std::string sender = fmt::format("Discord: {}", globalName.get<std::string>());
-
-			AsaApi::GetApiUtils().SendChatMessageToAll(FString(sender), msg.c_str());
-
-			PluginTemplate::lastMessageID = resObj["id"].get<std::string>();
-		}
-		catch (std::exception& error)
-		{
-			Log::GetLog()->error("Error parsing JSON results. Error: {}",error.what());
-		}
-	}
-	else
-	{
-		Log::GetLog()->warn("Failed to fetch messages. success: {}", success);
-	}
-}
-
-void FetchMessageFromDiscord()
-{
-	//Log::GetLog()->warn("Function: {}", __FUNCTION__);
-
-	std::string botToken = PluginTemplate::config["DiscordBot"].value("BotToken","");
-
-	std::string channelID = PluginTemplate::config["DiscordBot"].value("ChannelID", "");
-
-	std::string apiURL = FString::Format("https://discord.com/api/v10/channels/{}/messages?limit=1", channelID).ToString();
-
-	std::vector<std::string> headers = {
-		"Content-Type: application/json",
-		"User-Agent: PluginTemplate/1.0",
-		"Connection: keep-alive",
-		"Accept: */*",
-		"Content-Length: 0",
-		"Authorization: Bot " + botToken
-	};
-
-	try
-	{
-		bool req = PluginTemplate::req.CreateGetRequest(apiURL, FetchMessageFromDiscordCallback, headers);
-
-		if (!req)
-			Log::GetLog()->error("Failed to perform Get request. req = {}", req);
-	}
-	catch (const std::exception& error)
-	{
-		Log::GetLog()->error("Failed to perform Get request. Error: {}", error.what());
-	}
-}
-
-void SendMessageToDiscordCallback(bool success, std::string results, std::unordered_map<std::string, std::string> responseHeaders)
-{
-	if (!success)
-	{
-		Log::GetLog()->error("Failed to send Post request. {} {} {}", __FUNCTION__, success, results);
-	}
-	else
-	{
-		Log::GetLog()->info("Success. {} {} {}", __FUNCTION__, success, results);
-	}
-}
-
-void SendMessageToDiscord(std::string msg)
-{
-
-	Log::GetLog()->warn("Function: {}", __FUNCTION__);
-
-	
-	std::string webhook = PluginTemplate::config["DiscordBot"].value("Webhook", "");
-	std::string botImgUrl = PluginTemplate::config["DiscordBot"].value("BotImageURL", "");
-
-	if (webhook == "" || webhook.empty()) return;
-
-	FString msgFormat = L"{{\"content\":\"{}\",\"username\":\"{}\",\"avatar_url\":\"{}\"}}";
-
-	FString msgOutput = FString::Format(*msgFormat, msg, "ArkBot", botImgUrl);
-
-	std::vector<std::string> headers = {
-		"Content-Type: application/json",
-		"User-Agent: PluginTemplate/1.0",
-		"Connection: keep-alive",
-		"Accept: */*"
-	};
-
-	try
-	{
-		bool req = PluginTemplate::req.CreatePostRequest(webhook, SendMessageToDiscordCallback, msgOutput.ToStringUTF8(), "application/json", headers);
-
-		if(!req)
-			Log::GetLog()->error("Failed to send Post request. req = {}", req);
-	}
-	catch (const std::exception& error)
-	{
-		Log::GetLog()->error("Failed to send Post request. Error: {}", error.what());
-	}
-}
-
-bool Points(FString eos_id, int cost, bool check_points = false)
-{
-	if (cost == -1)
-	{
-		if (PluginTemplate::config["Debug"].value("Points", false) == true)
-		{
-			Log::GetLog()->warn("Cost is -1");
-		}
-		return false;
-	}
-
-	if (cost == 0)
-	{
-		if (PluginTemplate::config["Debug"].value("Points", false) == true)
-		{
-			Log::GetLog()->warn("Cost is 0");
-		}
-
-		return true;
-	}
-
-	nlohmann::json config = PluginTemplate::config["PointsDBSettings"];
-
-	if (config.value("Enabled", false) == false)
-	{
-		if (PluginTemplate::config["Debug"].value("Points", false) == true)
-		{
-			Log::GetLog()->warn("Points system is disabled");
-		}
-
-		return true;
-	}
-
-	std::string tablename = config.value("TableName", "ArkShopPlayers");
-	std::string unique_id = config.value("UniqueIDField", "EosId");
-	std::string points_field = config.value("PointsField", "Points");
-	std::string totalspent_field = config.value("TotalSpentField", "TotalSpent");
-
-	if (tablename.empty() || unique_id.empty() || points_field.empty())
-	{
-		if (PluginTemplate::config["Debug"].value("Points", false) == true)
-		{
-			Log::GetLog()->warn("DB Fields are empty");
-		}
-		return false;
-	}
-
-	std::string escaped_eos_id = PluginTemplate::pointsDB->escapeString(eos_id.ToString());
-
-	std::string query = fmt::format("SELECT * FROM {} WHERE {}='{}'", tablename, unique_id, escaped_eos_id);
-
-	std::vector<std::map<std::string, std::string>> results;
-
-	if (!PluginTemplate::pointsDB->read(query, results))
-	{
-		if (PluginTemplate::config["Debug"].value("Points", false) == true)
-		{
-			Log::GetLog()->warn("Error reading points db");
-		}
-
-		return false;
-	}
-
-	if (results.size() <= 0)
-	{
-		if (PluginTemplate::config["Debug"].value("Points", false) == true)
-		{
-			Log::GetLog()->warn("No record found");
-		}
-		return false;
-	}
-
-	int points = std::atoi(results[0].at(points_field).c_str());
-
-	if (check_points)
-	{
-		if (PluginTemplate::config["Debug"].value("Points", false) == true)
-		{
-			Log::GetLog()->warn("Player got {} points", points);
-		}
-
-		if (points >= cost) return true;
-	}
-	else
-	{
-		int amount = points - cost;
-
-		std::vector<std::pair<std::string, std::string>> data;
-
-		data.push_back({ points_field, std::to_string(amount) });
-
-		if (totalspent_field != "")
-		{
-			int total_spent = std::atoi(results[0].at(totalspent_field).c_str());
-			std::string total_ts = std::to_string(total_spent + cost);
-
-			data.push_back({totalspent_field, total_ts});
-		}
-
-		std::string condition = fmt::format("{}='{}'", unique_id, escaped_eos_id);
-
-		if (PluginTemplate::pointsDB->update(tablename, data, condition))
-		{
-			if (PluginTemplate::config["Debug"].value("Points", false) == true)
-			{
-				Log::GetLog()->info("{} Points DB updated", amount);
-			}
-
-			return true;
-		}
-	}
-
-	return false;
-}
-
-nlohmann::json GetCommandString(const std::string permission, const std::string command)
-{
-	if (permission.empty()) return {};
-	if (command.empty()) return {};
-
-	nlohmann::json config_obj = PluginTemplate::config["PermissionGroups"];
-	nlohmann::json perm_obj = config_obj[permission];
-	nlohmann::json command_obj = perm_obj["Commands"];
-	nlohmann::json setting_obj = command_obj[command];
-
-	return setting_obj;
-}
-
-TArray<FString> GetPlayerPermissions(FString eos_id)
-{
-	TArray<FString> PlayerPerms = { "Default" };
-
-	std::string escaped_eos_id = PluginTemplate::permissionsDB->escapeString(eos_id.ToString());
-
-	std::string tablename = PluginTemplate::config["PermissionsDBSettings"].value("TableName", "Players");
-
-	std::string condition = PluginTemplate::config["PermissionsDBSettings"].value("UniqueIDField", "EOS_Id");
-
-	std::string query = fmt::format("SELECT * FROM {} WHERE {}='{}';", tablename, condition, escaped_eos_id);
-
-	std::vector<std::map<std::string, std::string>> results;
-	if (!PluginTemplate::permissionsDB->read(query, results))
-	{
-		if (PluginTemplate::config["Debug"].value("Permissions", false) == true)
-		{
-			Log::GetLog()->warn("Error reading permissions DB");
-		}
-
-		return PlayerPerms;
-	}
-
-	if (results.size() <= 0) return PlayerPerms;
-
-	std::string permsfield = PluginTemplate::config["PermissionsDBSettings"].value("PermissionGroupField","PermissionGroups");
-
-	FString playerperms = FString(results[0].at(permsfield));
-
-	if (PluginTemplate::config["Debug"].value("Permissions", false) == true)
-	{
-		Log::GetLog()->info("current player perms {}", playerperms.ToString());
-	}
-
-	playerperms.ParseIntoArray(PlayerPerms, L",", true);
-
-	return PlayerPerms;
-}
-
-FString GetPriorPermByEOSID(FString eos_id)
-{
-	TArray<FString> player_groups = GetPlayerPermissions(eos_id);
-
-	const nlohmann::json permGroups = PluginTemplate::config["PermissionGroups"];
-
-	std::string defaultGroup = "Default";
-	int minPriority = INT_MAX;
-	nlohmann::json result;
-	FString selectedPerm = "Default";
-
-	for (const FString& param : player_groups)
-	{
-		if (permGroups.contains(param.ToString()))
-		{
-			int priority = static_cast<int>(permGroups[param.ToString()]["Priority"]);
-			if (priority < minPriority)
-			{
-				minPriority = priority;
-				result = permGroups[param.ToString()];
-				selectedPerm = param;
-			}
-		}
-	}
-
-	if (result.is_null() && permGroups.contains(defaultGroup))
-	{
-		if(!permGroups[defaultGroup].is_null())
-			result = permGroups[defaultGroup];
-
-		result = {};
-	}
-
-	if (PluginTemplate::config["Debug"].value("Permissions", false) == true)
-	{
-		Log::GetLog()->info("Selected Permission {}", selectedPerm.ToString());
-	}
-
-	return selectedPerm;
-}
-
-bool AddPlayer(FString eosID, int playerID, FString playerName)
-{
-	std::vector<std::pair<std::string, std::string>> data = {
-		{"EosId", eosID.ToString()},
-		{"PlayerId", std::to_string(playerID)},
-		{"PlayerName", playerName.ToString()}
-	};
-
-	return PluginTemplate::pluginTemplateDB->create(PluginTemplate::config["PluginDBSettings"]["TableName"].get<std::string>(), data);
-}
-
-bool ReadPlayer(FString eosID)
-{
-	std::string escaped_id = PluginTemplate::pluginTemplateDB->escapeString(eosID.ToString());
-
-	std::string query = fmt::format("SELECT * FROM {} WHERE EosId='{}'", PluginTemplate::config["PluginDBSettings"]["TableName"].get<std::string>(), escaped_id);
-
-	std::vector<std::map<std::string, std::string>> results;
-	PluginTemplate::pluginTemplateDB->read(query, results);
-
-	return results.size() <= 0 ? false : true;
-}
-
-bool UpdatePlayer(FString eosID, FString playerName)
-{
-	std::string unique_id = "EosId";
-
-	std::string escaped_id = PluginTemplate::pluginTemplateDB->escapeString(eosID.ToString());
-
-	std::vector<std::pair<std::string, std::string>> data = {
-		{"PlayerName", playerName.ToString() + "123"}
-	};
-
-	std::string condition = fmt::format("{}='{}'", unique_id, escaped_id);
-
-	return PluginTemplate::pluginTemplateDB->update(PluginTemplate::config["PluginDBSettings"]["TableName"].get<std::string>(), data, condition);
-}
-
-bool DeletePlayer(FString eosID)
-{
-	std::string escaped_id = PluginTemplate::pluginTemplateDB->escapeString(eosID.ToString());
-
-	std::string condition = fmt::format("EosId='{}'", escaped_id);
-
-	return PluginTemplate::pluginTemplateDB->deleteRow(PluginTemplate::config["PluginDBSettings"]["TableName"].get<std::string>(), condition);
-}
-
+#include <string>
+
+// ---------------------------------------------------------------------------
+// ReadConfig
+//   Loads config.json from the plugin folder into CousinCustomRates::config.
+// ---------------------------------------------------------------------------
 void ReadConfig()
 {
 	try
 	{
-		const std::string config_path = AsaApi::Tools::GetCurrentDir() + "/ArkApi/Plugins/" + PROJECT_NAME + "/config.json";
-		std::ifstream file{config_path};
+		const std::string config_path =
+			AsaApi::Tools::GetCurrentDir() + "/ArkApi/Plugins/" + PROJECT_NAME + "/config.json";
+
+		std::ifstream file{ config_path };
 		if (!file.is_open())
-		{
-			throw std::runtime_error("Can't open config file.");
-		}
-		file >> PluginTemplate::config;
+			throw std::runtime_error("Cannot open config file: " + config_path);
 
-		Log::GetLog()->info("{} config file loaded.", PROJECT_NAME);
+		file >> CousinCustomRates::config;
 
-		PluginTemplate::isDebug = PluginTemplate::config["General"]["Debug"].get<bool>();
-
-		Log::GetLog()->warn("Debug {}", PluginTemplate::isDebug);
-
+		Log::GetLog()->info("{} config loaded successfully.", PROJECT_NAME);
 	}
-	catch(const std::exception& error)
+	catch (const std::exception& error)
 	{
-		Log::GetLog()->error("Config load failed. ERROR: {}", error.what());
+		Log::GetLog()->error("ReadConfig failed. ERROR: {}", error.what());
 		throw;
 	}
 }
 
-void LoadDatabase()
+// ---------------------------------------------------------------------------
+// SaveState
+//   Persists the active preset name to status.json so it survives restarts.
+// ---------------------------------------------------------------------------
+void SaveState(const std::string& presetName)
 {
-	Log::GetLog()->warn("LoadDatabase");
-	PluginTemplate::pluginTemplateDB = DatabaseFactory::createConnector(PluginTemplate::config["PluginDBSettings"]);
-
-	nlohmann::ordered_json tableDefinition = {};
-	if (PluginTemplate::config["PluginDBSettings"].value("UseMySQL", true) == true)
+	try
 	{
-		tableDefinition = {
-			{"Id", "INT NOT NULL AUTO_INCREMENT"},
-			{"EosId", "VARCHAR(50) NOT NULL"},
-			{"PlayerId", "VARCHAR(50) NOT NULL"},
-			{"PlayerName", "VARCHAR(50) NOT NULL"},
-			{"CreateAt", "DATETIME DEFAULT CURRENT_TIMESTAMP"},
-			{"PRIMARY", "KEY(Id)"},
-			{"UNIQUE", "INDEX EosId_UNIQUE (EosId ASC)"}
-		};
+		const std::string path =
+			AsaApi::Tools::GetCurrentDir() + "/ArkApi/Plugins/" + PROJECT_NAME + "/status.json";
+
+		nlohmann::json stateJson;
+		stateJson["active_preset"] = presetName;
+
+		std::ofstream file{ path };
+		if (!file.is_open())
+		{
+			Log::GetLog()->error("SaveState: cannot open {} for writing.", path);
+			return;
+		}
+		file << stateJson.dump(2);
+
+		Log::GetLog()->info("SaveState: preset '{}' saved to status.json.", presetName);
 	}
+	catch (const std::exception& error)
+	{
+		Log::GetLog()->error("SaveState failed. ERROR: {}", error.what());
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LoadState
+//   Reads status.json and returns the last active preset name.
+//   Returns an empty string if the file does not exist or is invalid.
+// ---------------------------------------------------------------------------
+std::string LoadState()
+{
+	try
+	{
+		const std::string path =
+			AsaApi::Tools::GetCurrentDir() + "/ArkApi/Plugins/" + PROJECT_NAME + "/status.json";
+
+		std::ifstream file{ path };
+		if (!file.is_open())
+			return "";
+
+		nlohmann::json stateJson;
+		file >> stateJson;
+
+		return stateJson.value("active_preset", "");
+	}
+	catch (const std::exception& error)
+	{
+		Log::GetLog()->warn("LoadState: could not read status.json. ERROR: {}", error.what());
+		return "";
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SendMessageToDiscordCallback
+//   Callback invoked after the webhook POST completes.
+// ---------------------------------------------------------------------------
+void SendMessageToDiscordCallback(bool success, std::string results,
+	std::unordered_map<std::string, std::string> /*responseHeaders*/)
+{
+	if (!success)
+		Log::GetLog()->error("Discord webhook POST failed. Response: {}", results);
 	else
+		Log::GetLog()->info("Discord webhook POST succeeded.");
+}
+
+// ---------------------------------------------------------------------------
+// SendMessageToDiscord
+//   Posts a Discord message to a webhook URL.
+//
+//   If the preset has a "Discord_Embed" block in config.json, a rich embed
+//   is built with a colored sidebar, title, description, auto-populated rate
+//   fields, and an optional footer.
+//
+//   If no "Discord_Embed" block is present, a plain content string is sent
+//   as fallback.
+//
+//   If webhookUrl is empty this function does nothing — no error is thrown.
+//
+//   Config structure (all sub-fields are optional):
+//   "Discord_Embed": {
+//     "Title":       "⚡ Weekend Rates Activated",
+//     "Description": "Server is now running boosted rates!",
+//     "Color":       3066993,      <- decimal RGB (e.g. 3066993 = green)
+//     "Footer":      "CousinCustomRates"
+//   }
+// ---------------------------------------------------------------------------
+void SendMessageToDiscord(const std::string& webhookUrl,
+	const std::string& presetKey,
+	const nlohmann::json& preset)
+{
+	if (webhookUrl.empty())
+		return;  // Webhook not configured — skip silently
+
+	try
 	{
-		tableDefinition = {
-			{"Id","INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT"},
-			{"EosId","TEXT NOT NULL UNIQUE"},
-			{"PlayerId","TEXT"},
-			{"PlayerName","TEXT"},
-			{"CreateAt","TIMESTAMP DEFAULT CURRENT_TIMESTAMP"}
+		nlohmann::json payload;
+
+		if (preset.contains("Discord_Embed"))
+		{
+			// ---- Build a rich embed ----------------------------------------
+			const nlohmann::json& embedCfg = preset["Discord_Embed"];
+
+			nlohmann::json embed;
+			embed["title"]       = embedCfg.value("Title",       "Rate Change");
+			embed["description"] = embedCfg.value("Description", "A new rate preset has been activated.");
+			embed["color"]       = embedCfg.value("Color",       3447003); // default: blue
+
+			// Rate fields — always auto-populated from the preset multipliers
+			embed["fields"] = nlohmann::json::array({
+				{ {"name","Preset"},      {"value", presetKey},                                                                     {"inline", false} },
+				{ {"name","Taming"},      {"value", fmt::format("{}x", preset.value("TamingSpeedMultiplier",     1.0f))},           {"inline", true } },
+				{ {"name","XP"},          {"value", fmt::format("{}x", preset.value("XPMultiplier",              1.0f))},           {"inline", true } },
+				{ {"name","Harvest"},     {"value", fmt::format("{}x", preset.value("HarvestAmountMultiplier",   1.0f))},           {"inline", true } },
+				{ {"name","Baby Mature"}, {"value", fmt::format("{}x", preset.value("BabyMatureSpeedMultiplier", 1.0f))},           {"inline", true } },
+				{ {"name","Egg Hatch"},   {"value", fmt::format("{}x", preset.value("EggHatchSpeedMultiplier",   1.0f))},           {"inline", true } }
+			});
+
+			if (embedCfg.contains("Footer"))
+				embed["footer"] = { {"text", embedCfg.value("Footer", "")} };
+
+			payload["embeds"] = nlohmann::json::array({ embed });
+		}
+		else
+		{
+			// ---- Fallback: plain text message --------------------------------
+			payload["content"] = fmt::format(
+				"[{}] Rate preset **{}** activated. "
+				"Taming: {}x | XP: {}x | Harvest: {}x | Baby: {}x | Egg: {}x",
+				PROJECT_NAME,
+				presetKey,
+				preset.value("TamingSpeedMultiplier",     1.0f),
+				preset.value("XPMultiplier",              1.0f),
+				preset.value("HarvestAmountMultiplier",   1.0f),
+				preset.value("BabyMatureSpeedMultiplier", 1.0f),
+				preset.value("EggHatchSpeedMultiplier",   1.0f)
+			);
+			payload["username"] = "CousinCustomRates";
+		}
+
+		const std::string body = payload.dump();
+
+		std::vector<std::string> headers = {
+			"Content-Type: application/json",
+			"User-Agent: CousinCustomRates/1.0"
 		};
+
+		bool ok = CousinCustomRates::req.CreatePostRequest(
+			webhookUrl,
+			&SendMessageToDiscordCallback,
+			body,
+			"application/json",
+			headers
+		);
+
+		if (!ok)
+			Log::GetLog()->error("SendMessageToDiscord: CreatePostRequest returned false.");
 	}
-
-	PluginTemplate::pluginTemplateDB->createTableIfNotExist(PluginTemplate::config["PluginDBSettings"].value("TableName", ""), tableDefinition);
-
-
-	// PermissionsDB
-	if (PluginTemplate::config["PermissionsDBSettings"].value("Enabled", true) == true)
+	catch (const std::exception& error)
 	{
-		PluginTemplate::permissionsDB = DatabaseFactory::createConnector(PluginTemplate::config["PermissionsDBSettings"]);
+		Log::GetLog()->error("SendMessageToDiscord failed. ERROR: {}", error.what());
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BroadcastRateChange
+//   Sends a server-wide on-screen HUD notification to all connected players.
+//   Uses SendNotificationToAll so the message appears as a pop-up overlay
+//   rather than in the chat box.
+//
+//   Parameters used:
+//     color         - yellow, so it stands out against most backgrounds
+//     display_scale - 1.5f  (slightly larger than default for visibility)
+//     display_time  - 10.0f (seconds the notification stays on screen)
+//     icon          - nullptr (no custom icon)
+//
+//   Skips silently if message is empty.
+// ---------------------------------------------------------------------------
+void BroadcastRateChange(const std::string& message)
+{
+	if (message.empty())
+		return;
+
+	FLinearColor color(1.0f, 0.9f, 0.0f, 1.0f); // yellow
+
+	AsaApi::GetApiUtils().SendNotificationToAll(color, 1.5f, 10.0f, nullptr, "{}", message.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// ApplyRates
+//   Looks up presetName in config.json, writes all five multipliers into both
+//   the live AShooterGameMode (server authority) and AShooterGameState
+//   (replicated to clients / used by world ticking logic), then forces a net
+//   update so clients see the changes immediately.
+//
+//   After that it saves state, sends a Discord message (rich embed or plain
+//   text), and broadcasts in-game.
+//
+//   Returns true on success, false if the preset was not found or if the
+//   GameMode / GameState pointer is not yet available.
+// ---------------------------------------------------------------------------
+bool ApplyRates(const FString& presetName, bool sendNotifications = true)
+{
+	const std::string presetKey = presetName.ToString();
+
+	// Validate preset exists in config
+	if (!CousinCustomRates::config.contains("RatePresets") ||
+		!CousinCustomRates::config["RatePresets"].contains(presetKey))
+	{
+		Log::GetLog()->error("ApplyRates: preset '{}' not found in config.json.", presetKey);
+		return false;
 	}
 
-	// PointsDB (ArkShop)
-	if (PluginTemplate::config["PointsDBSettings"].value("Enabled", true) == true)
+	// Get live GameMode pointer
+	AShooterGameMode* gameMode = AsaApi::GetApiUtils().GetShooterGameMode();
+	if (!gameMode)
 	{
-		PluginTemplate::pointsDB = DatabaseFactory::createConnector(PluginTemplate::config["PointsDBSettings"]);
+		Log::GetLog()->error("ApplyRates: AShooterGameMode is null — server not ready yet.");
+		return false;
 	}
-	
+
+	// Get live GameState pointer (replicated to all clients).
+	// Use IApiUtils::GetGameState() which reads directly from UWorld::GameState —
+	// avoids the "Failed to get offset of AGameModeBase.GetGameState" runtime crash
+	// that occurs when calling GetGameState() through the gameMode pointer.
+	AShooterGameState* gameState = AsaApi::GetApiUtils().GetGameState();
+	if (!gameState)
+	{
+		Log::GetLog()->error("ApplyRates: AShooterGameState is null.");
+		return false;
+	}
+
+	const nlohmann::json& preset = CousinCustomRates::config["RatePresets"][presetKey];
+
+	// 1. Update GameMode — server-side authority
+	gameMode->TamingSpeedMultiplierField()     = preset.value("TamingSpeedMultiplier",     1.0f);
+	gameMode->XPMultiplierField()              = preset.value("XPMultiplier",              1.0f);
+	gameMode->HarvestAmountMultiplierField()   = preset.value("HarvestAmountMultiplier",   1.0f);
+	gameMode->BabyMatureSpeedMultiplierField() = preset.value("BabyMatureSpeedMultiplier", 1.0f);
+	gameMode->EggHatchSpeedMultiplierField()   = preset.value("EggHatchSpeedMultiplier",   1.0f);
+
+	// Maturation helper: when babies mature faster, cuddle (imprinting) intervals must
+	// scale inversely so imprinting remains achievable at high maturation speeds.
+	// Only adjust automatically if "BabyCuddleIntervalMultiplier" is not explicitly set
+	// in the preset — an explicit value in config always wins.
+	{
+		const float matureSpeed = preset.value("BabyMatureSpeedMultiplier", 1.0f);
+		const float cuddleInterval = preset.contains("BabyCuddleIntervalMultiplier")
+			? preset.value("BabyCuddleIntervalMultiplier", 1.0f)
+			: (matureSpeed > 1.0f ? 1.0f / matureSpeed : 1.0f);
+
+		gameMode->BabyCuddleIntervalMultiplierField() = cuddleInterval;
+	}
+
+	// Ensure singleplayer overrides are disabled so the live GameMode multipliers
+	// are respected by the maturation tick logic.
+	gameMode->bUseSingleplayerSettingsField() = false;
+
+	// 2. Update GameState — used by world ticking logic and replicated to clients.
+	// Note: BabyMatureSpeedMultiplierField does NOT exist in AShooterGameState;
+	//       it is authoritative only in GameMode (already set above).
+	//       EggHatchSpeedMultiplierField exists in both classes and must be mirrored
+	//       here so the client UI and incubation ticking stay in sync.
+	gameState->EggHatchSpeedMultiplierField() = preset.value("EggHatchSpeedMultiplier", 1.0f);
+
+	// 3. Force a network update so clients receive the new GameState values immediately
+	gameState->ForceNetUpdate(false, true, false);
+
+	Log::GetLog()->info(
+		"ApplyRates: preset '{}' applied. "
+		"Taming={} XP={} Harvest={} BabyMature={} EggHatch={}",
+		presetKey,
+		preset.value("TamingSpeedMultiplier",     1.0f),
+		preset.value("XPMultiplier",              1.0f),
+		preset.value("HarvestAmountMultiplier",   1.0f),
+		preset.value("BabyMatureSpeedMultiplier", 1.0f),
+		preset.value("EggHatchSpeedMultiplier",   1.0f)
+	);
+
+	// Persist choice for server restarts
+	CousinCustomRates::lastPreset = presetKey;
+	SaveState(presetKey);
+
+	// In-game broadcast and Discord notification are only sent when rates are
+	// actively changed (e.g. via RCON or the scheduler), NOT when the plugin
+	// silently restores the saved preset on server restart.
+	if (sendNotifications)
+	{
+		// In-game broadcast (optional — empty string skips)
+		BroadcastRateChange(preset.value("BroadcastMessage", ""));
+
+		// Discord notification — rich embed if configured, plain text otherwise.
+		// Empty webhook URL skips silently.
+		SendMessageToDiscord(preset.value("Discord_Webhook", ""), presetKey, preset);
+	}
+
+	return true;
 }
