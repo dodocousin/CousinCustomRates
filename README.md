@@ -2,7 +2,7 @@
 
 An **ARK: Survival Ascended** server plugin built with the [ASA API](https://github.com/ArkServerApi/AsaApi) that lets you dynamically change server rate multipliers at runtime — no restart required.
 
-Rates can be changed instantly via RCON, or switched automatically on a day/hour schedule. Every change is persisted to disk and automatically re-applied after a server restart.
+Rates can be changed instantly via RCON or the in-game admin console, switched automatically on a day/hour schedule, or set to run for a fixed duration before automatically reverting. Every change is persisted to disk and automatically re-applied after a server restart.
 
 ---
 
@@ -11,13 +11,15 @@ Rates can be changed instantly via RCON, or switched automatically on a day/hour
 | Feature | Description |
 |---|---|
 | **Rate presets** | Define unlimited named presets in `config.json`, each with its own multiplier values |
-| **RCON command** | Switch any preset instantly with `changerates <preset_name>` |
+| **RCON & console commands** | Switch any preset instantly with `changerates <preset_name>` — works via RCON **and** the in-game admin console |
 | **Hot config reload** | Edit `config.json` and apply changes without restarting with `CousinCustomRates.Reload` |
 | **Persistent state** | The active preset is saved to `status.json` and automatically re-applied on every server restart |
 | **In-game broadcast** | Sends a server-wide message to all players when rates change (optional per preset) |
-| **Discord webhook** | Posts a notification to a Discord channel when rates change (optional per preset) |
+| **Discord webhook** | Posts a notification to a Discord channel **only when rates are actively changed** — not on server restart (optional per preset) |
 | **Discord rich embed** | Each preset can define a formatted embed with title, color, and description (falls back to plain text if not configured) |
+| **Timed presets** | Any preset can have a `Duration` (in minutes) that causes it to automatically revert after the countdown expires |
 | **Automatic scheduler** | Optional day/hour schedule that switches presets automatically without any admin input |
+| **Config validation** | Every config load/reload validates the JSON structure and logs actionable warnings for any issues found |
 
 ---
 
@@ -37,7 +39,9 @@ Rates can be changed instantly via RCON, or switched automatically on a day/hour
 
 ---
 
-## RCON Commands
+## Commands
+
+All commands work both via **RCON** and the **in-game admin console** (Tab key).
 
 | Command | Description |
 |---|---|
@@ -48,7 +52,7 @@ Rates can be changed instantly via RCON, or switched automatically on a day/hour
 **Examples:**
 ```
 changerates weekend_rates
-changerates normal_rates
+changerates event_rates
 CousinCustomRates.Reload
 ```
 
@@ -61,7 +65,7 @@ The configuration file is located at:
 ArkApi/Plugins/CousinCustomRates/config.json
 ```
 
-The file has two top-level sections: **`RatePresets`** and **`Schedule`**.
+The file has three top-level sections: **`RatePresets`**, **`TimedPresets`**, and **`Schedule`**.
 
 ---
 
@@ -76,7 +80,7 @@ Defines all available rate presets. You can create as many as you like.
 }
 ```
 
-Each preset is identified by its **JSON key** (e.g. `"weekend_rates"`). This is the name you use in the RCON command and the scheduler.
+Each preset is identified by its **JSON key** (e.g. `"weekend_rates"`). This is the name you use in the commands and the scheduler.
 
 #### Preset fields
 
@@ -87,6 +91,7 @@ Each preset is identified by its **JSON key** (e.g. `"weekend_rates"`). This is 
 | `HarvestAmountMultiplier` | `float` | ✅ | Harvest amount multiplier |
 | `BabyMatureSpeedMultiplier` | `float` | ✅ | Baby maturation speed multiplier |
 | `EggHatchSpeedMultiplier` | `float` | ✅ | Egg hatch speed multiplier |
+| `Duration` | `integer` | ❌ | **Minutes** before the preset automatically reverts. Requires `TimedPresets.Enabled = true`. Omit for a permanent preset. |
 | `BroadcastMessage` | `string` | ❌ | In-game message sent to all players when this preset activates. Leave as `""` to skip. |
 | `Discord_Webhook` | `string` | ❌ | Full Discord webhook URL. Leave as `""` to skip Discord entirely — no errors occur. |
 | `Discord_Embed` | `object` | ❌ | Rich embed config for Discord (see below). If absent, a plain text message is sent instead. |
@@ -106,21 +111,20 @@ Each preset is identified by its **JSON key** (e.g. `"weekend_rates"`). This is 
 
 > **Rate fields in embeds** — Taming, XP, Harvest, Baby Mature, and Egg Hatch values are **always added automatically** as inline fields from the preset multipliers. You do not need to list them manually in `Discord_Embed`.
 
-#### Full preset example
+> **Discord on restart** — Discord notifications (and in-game broadcasts) are **only sent when rates are actively changed** via command or scheduler. Silently restoring the saved preset on server restart does **not** trigger any notifications.
+
+#### Standard preset example
 
 ```json
 "weekend_rates": {
     "BroadcastMessage": "Weekend rates are now ACTIVE! Enjoy the boosted rates!",
-
     "Discord_Webhook": "https://discord.com/api/webhooks/1234567890/YOUR_TOKEN",
-
     "Discord_Embed": {
         "Title":       "⚡ Weekend Rates Activated",
         "Description": "Server is now running boosted weekend rates!",
         "Color":       3066993,
         "Footer":      "CousinCustomRates"
     },
-
     "TamingSpeedMultiplier":     10.0,
     "XPMultiplier":              10.0,
     "HarvestAmountMultiplier":   20.0,
@@ -129,26 +133,74 @@ Each preset is identified by its **JSON key** (e.g. `"weekend_rates"`). This is 
 }
 ```
 
-The Discord embed produced by the above will look like this:
+---
 
+### Section 2 — `TimedPresets` (optional)
+
+Master switch for the timed preset feature. When disabled, all `Duration` fields are silently ignored and every `changerates` call behaves as a permanent switch.
+
+```json
+"TimedPresets": {
+    "Enabled": true
+}
 ```
-┌─────────────────────────────────────────────┐  ← green left border
-│ ⚡ Weekend Rates Activated                   │  ← Title
-│ Server is now running boosted weekend rates! │  ← Description
-│─────────────────────────────────────────────│
-│ Preset:        weekend_rates                │
-│ Taming: 10x  │ XP: 10x  │ Harvest: 20x     │
-│ Baby Mature: 50x  │ Egg Hatch: 50x          │
-│─────────────────────────────────────────────│
-│ CousinCustomRates                           │  ← Footer
-└─────────────────────────────────────────────┘
+
+| Field | Type | Description |
+|---|---|---|
+| `Enabled` | `bool` | Set to `true` to allow presets to have a `Duration` countdown. Default: `false`. |
+
+#### How timed presets work
+
+When you run `changerates event_rates` and `event_rates` has a `Duration` field with `TimedPresets.Enabled = true`:
+
+1. Rates apply immediately — broadcast and Discord fire as normal.
+2. A countdown starts for `Duration` minutes.
+3. **While the countdown is active**, the automatic scheduler is **paused** — schedule rules cannot override the event.
+4. When the countdown expires:
+   - If a **Schedule rule** currently matches the server time → that preset activates (the scheduler resumes naturally).
+   - Otherwise → the preset that was **active before the event** is restored.
+   - The revert fires with **full notifications** (broadcast + Discord).
+
+#### Restart survival
+
+The expiry timestamp is saved to `status.json`. On the next server start:
+- If the timer **already expired** during downtime → the fallback is applied immediately with full notifications.
+- If time **remains** → the countdown is re-armed with the remaining seconds.
+
+#### Stacking timed presets
+
+If you activate a second timed preset while one is already running, the countdown resets to the new duration but the **fallback target is not changed** — it stays as the original pre-event preset, so you always revert cleanly.
+
+#### Timed preset example
+
+```json
+"event_rates": {
+    "Duration": 120,
+    "BroadcastMessage": "🎉 2-hour EVENT rates are now ACTIVE!",
+    "Discord_Webhook": "",
+    "Discord_Embed": {
+        "Title":       "🎉 Event Rates Active (2h)",
+        "Description": "Boosted event rates are live for 2 hours! Rates will revert automatically.",
+        "Color":       15844367,
+        "Footer":      "CousinCustomRates"
+    },
+    "TamingSpeedMultiplier":     25.0,
+    "XPMultiplier":              25.0,
+    "HarvestAmountMultiplier":   50.0,
+    "BabyMatureSpeedMultiplier": 100.0,
+    "EggHatchSpeedMultiplier":   100.0
+}
 ```
+
+`Duration: 120` = 2 hours. Activate with `changerates event_rates`. Rates revert automatically after 2 hours.
 
 ---
 
-### Section 2 — `Schedule` (optional)
+### Section 3 — `Schedule` (optional)
 
 Automatically activates presets based on the current day of the week and hour. When disabled, **no timer is registered** and there is zero runtime overhead.
+
+> **Timed preset interaction** — While a timed preset countdown is running, the Schedule is **paused**. It resumes automatically when the timed preset expires.
 
 ```json
 "Schedule": {
@@ -182,7 +234,7 @@ Automatically activates presets based on the current day of the week and hour. W
 3. If the matching preset is **already active**, nothing happens (no redundant re-application or Discord spam).
 4. If **no rule matches** the current time slot, the active preset is left unchanged.
 
-> **Timezone:** The scheduler uses the **server machine's local timezone** as configured in the OS. Make sure your server clock is set to your intended timezone.
+> **Timezone:** The scheduler uses the **server machine's local timezone** as configured in the OS.
 
 > **Overnight ranges** (e.g. 22:00 – 02:00) are **not supported** in a single rule. Use two rules as a workaround:
 > ```json
@@ -190,51 +242,50 @@ Automatically activates presets based on the current day of the week and hour. W
 > { "Preset": "night_rates", "Days": [...], "StartHour": 0,  "EndHour": 2  }
 > ```
 
-#### Schedule example
+---
 
-```json
-"Schedule": {
-    "Enabled": true,
-    "CheckIntervalSeconds": 60,
-    "Rules": [
-        {
-            "Preset": "weekend_rates",
-            "Days":   ["Friday", "Saturday", "Sunday"],
-            "StartHour": 18,
-            "EndHour":   23
-        },
-        {
-            "Preset": "normal_rates",
-            "Days":   ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"],
-            "StartHour": 0,
-            "EndHour":   17
-        }
-    ]
-}
-```
+## Config Validation
 
-This configuration:
-- Activates `weekend_rates` every **Friday, Saturday, and Sunday from 6 PM to 11:59 PM**.
-- Activates `normal_rates` every day from **midnight to 5:59 PM**.
-- Between midnight and 6 PM on weekends, the `normal_rates` rule also matches (it covers all days, 0–17).
+Every time `config.json` is loaded or reloaded, the plugin automatically validates its structure and logs any issues to the server log. Issues are reported as **warnings** (non-fatal) or **errors** (fatal, e.g. missing `RatePresets`).
+
+Checks include:
+- `RatePresets` exists and is an object
+- Each preset has all 5 multiplier fields, all are positive numbers
+- `Discord_Webhook` URLs start with `https://`
+- `Duration` values are positive integers (minutes)
+- `TimedPresets.Enabled` is a boolean
+- `Schedule` rules have all required fields, valid day names, hours in `[0,23]`, and `StartHour ≤ EndHour`
+- Schedule rule `Preset` values reference existing presets
+
+A summary line is always logged: either `"passed validation with no issues"` or `"X issue(s) found — review warnings above"`.
 
 ---
 
 ## Persistence
 
-When a preset is activated (via RCON or the scheduler), the plugin writes a `status.json` file:
+When a preset is activated (via command, timed expiry, or the scheduler), the plugin writes a `status.json` file:
 
 ```
 ArkApi/Plugins/CousinCustomRates/status.json
 ```
 
+**Standard preset:**
 ```json
 {
   "active_preset": "weekend_rates"
 }
 ```
 
-On every server restart, this file is read during `AShooterGameMode::InitGame` and the saved preset is automatically re-applied — **before any players can connect** — so rates are always consistent.
+**Timed preset (while countdown is active):**
+```json
+{
+  "active_preset": "event_rates",
+  "timed_expiry":  1748527200,
+  "timed_fallback": "normal_rates"
+}
+```
+
+On every server restart, this file is read during `AShooterGameMode::InitGame` and the saved preset is automatically re-applied **before any players can connect**. If a timed preset was active, the countdown is either resumed or the fallback is applied immediately.
 
 To clear the saved preset and revert to native `GameUserSettings.ini` defaults on next restart, simply delete `status.json`.
 
@@ -274,7 +325,26 @@ To clear the saved preset and revert to native `GameUserSettings.ini` defaults o
       "HarvestAmountMultiplier":   10.0,
       "BabyMatureSpeedMultiplier": 25.0,
       "EggHatchSpeedMultiplier":   25.0
+    },
+    "event_rates": {
+      "Duration": 120,
+      "BroadcastMessage": "🎉 2-hour EVENT rates are now ACTIVE!",
+      "Discord_Webhook": "",
+      "Discord_Embed": {
+        "Title":       "🎉 Event Rates Active (2h)",
+        "Description": "Boosted event rates are live for 2 hours! Rates will revert automatically.",
+        "Color":       15844367,
+        "Footer":      "CousinCustomRates"
+      },
+      "TamingSpeedMultiplier":     25.0,
+      "XPMultiplier":              25.0,
+      "HarvestAmountMultiplier":   50.0,
+      "BabyMatureSpeedMultiplier": 100.0,
+      "EggHatchSpeedMultiplier":   100.0
     }
+  },
+  "TimedPresets": {
+    "Enabled": true
   },
   "Schedule": {
     "Enabled": false,
