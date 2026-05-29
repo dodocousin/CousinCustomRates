@@ -66,11 +66,11 @@
     // -------------------------------------------------------------------------
     // TIMED PRESET EXAMPLE
     //
-    // Adding a "Duration" field (integer, seconds) to any preset makes it a
+    // Adding a "Duration" field (integer, minutes) to any preset makes it a
     // timed preset.  When it is activated via "changerates event_rates":
     //
     //   1. The rates apply immediately (broadcast + Discord fire as normal).
-    //   2. A countdown starts for the specified number of seconds.
+    //   2. A countdown starts for the specified number of minutes.
     //   3. While the countdown is active:
     //        • The scheduler (Schedule rules) is paused — it cannot override
     //          the timed preset mid-event.
@@ -100,10 +100,10 @@
     // -------------------------------------------------------------------------
     "event_rates": {
 
-      // Duration in SECONDS before the preset automatically reverts.
-      // 7200 = 2 hours.  Remove this field (or set Enabled=false) for a
+      // Duration in MINUTES before the preset automatically reverts.
+      // 120 = 2 hours.  Remove this field (or set Enabled=false) for a
       // permanent preset with no auto-revert.
-      "Duration": 7200,
+      "Duration": 120,
 
       "BroadcastMessage": "🎉 2-hour EVENT rates are now ACTIVE!",
       "Discord_Webhook":  "",

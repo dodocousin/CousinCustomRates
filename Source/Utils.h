@@ -88,7 +88,7 @@ void ValidateConfig()
 		if (preset.contains("Duration"))
 		{
 			if (!preset["Duration"].is_number_integer())
-				warn("Preset '" + presetKey + "': 'Duration' must be an integer (seconds).");
+				warn("Preset '" + presetKey + "': 'Duration' must be an integer (minutes).");
 			else if (preset["Duration"].get<int64_t>() <= 0)
 				warn("Preset '" + presetKey + "': 'Duration' is <= 0 — preset will not be timed.");
 		}
@@ -630,7 +630,9 @@ bool ApplyRates(const FString& presetName, bool sendNotifications, bool fromTime
 
 		if (timedEnabled && hasDuration)
 		{
-			const int64_t duration = preset["Duration"].get<int64_t>();
+			// Duration is stored in MINUTES in config — convert to seconds internally
+			const int64_t durationMinutes = preset["Duration"].get<int64_t>();
+			const int64_t durationSeconds = durationMinutes * 60LL;
 
 			// Capture the fallback only on the FIRST timed preset activation.
 			// If a timed preset is already running, keep the original fallback
@@ -649,13 +651,13 @@ bool ApplyRates(const FString& presetName, bool sendNotifications, bool fromTime
 			}
 
 			CousinCustomRates::timedPresetExpiry =
-				static_cast<int64_t>(std::time(nullptr)) + duration;
+				static_cast<int64_t>(std::time(nullptr)) + durationSeconds;
 
-			ArmTimedPresetExpiry(duration);
+			ArmTimedPresetExpiry(durationSeconds);
 
 			Log::GetLog()->info(
-				"ApplyRates: timed preset '{}' armed — expires in {}s, fallback='{}'.",
-				presetKey, duration, CousinCustomRates::timedFallbackPreset);
+				"ApplyRates: timed preset '{}' armed — expires in {} minute(s) ({}s), fallback='{}'.",
+				presetKey, durationMinutes, durationSeconds, CousinCustomRates::timedFallbackPreset);
 		}
 		else
 		{

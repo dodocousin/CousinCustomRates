@@ -31,7 +31,7 @@
       "EggHatchSpeedMultiplier": 25.0
     },
     "event_rates": {
-      "Duration": 7200,
+      "Duration": 120,
       "BroadcastMessage": "🎉 2-hour EVENT rates are now ACTIVE!",
       "Discord_Webhook": "",
       "Discord_Embed": {
