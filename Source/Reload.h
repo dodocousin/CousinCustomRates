@@ -47,6 +47,31 @@ void ReloadConfigRcon(RCONClientConnection* rcon_connection, RCONPacket* rcon_pa
 }
 
 // ---------------------------------------------------------------------------
+// ReloadConfigConsole
+//   In-game console (admin) command: CousinCustomRates.Reload
+//   Same logic as the RCON handler but replies to the admin's in-game
+//   console/chat instead of the RCON socket.
+// ---------------------------------------------------------------------------
+void ReloadConfigConsole(AShooterPlayerController* player, FString* /*message*/, bool /*written_to_console*/)
+{
+	FString reply;
+
+	try
+	{
+		Reload();
+		reply = "CousinCustomRates: config.json reloaded successfully.";
+	}
+	catch (const std::exception& error)
+	{
+		reply = FString("CousinCustomRates: failed to reload config. ERROR: ")
+			+ FString(error.what());
+	}
+
+	AsaApi::GetApiUtils().SendServerMessage(player, FLinearColor(1.0f, 0.9f, 0.0f, 1.0f),
+		"{}", reply.ToString());
+}
+
+// ---------------------------------------------------------------------------
 // AddReloadCommands / Remove
 // ---------------------------------------------------------------------------
 void AddReloadCommands(bool addCmd = true)
@@ -56,10 +81,12 @@ void AddReloadCommands(bool addCmd = true)
 	if (addCmd)
 	{
 		AsaApi::GetCommands().AddRconCommand(reloadCmd, &ReloadConfigRcon);
-		Log::GetLog()->info("Command '{}' registered.", reloadCmd.ToString());
+		AsaApi::GetCommands().AddConsoleCommand(reloadCmd, &ReloadConfigConsole);
+		Log::GetLog()->info("Command '{}' registered (RCON + console).", reloadCmd.ToString());
 	}
 	else
 	{
 		AsaApi::GetCommands().RemoveRconCommand(reloadCmd);
+		AsaApi::GetCommands().RemoveConsoleCommand(reloadCmd);
 	}
 }
