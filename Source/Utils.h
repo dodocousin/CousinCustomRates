@@ -4,8 +4,212 @@
 #include <string>
 
 // ---------------------------------------------------------------------------
+// ValidateConfig
+//   Inspects the loaded config for structural problems and logs warnings/
+//   errors for anything suspicious.  Never throws — the plugin keeps running
+//   even when issues are found.  Call this immediately after parsing JSON so
+//   admins see actionable feedback in the server log on every (re-)load.
+//
+//   Checks performed:
+//     • Top-level keys: RatePresets (required), Schedule (optional)
+//     • Per preset:
+//         - Each of the 5 multiplier fields is present and a positive number
+//         - Discord_Webhook, if present, starts with "https://"
+//     • Schedule block (when present):
+//         - Enabled is a bool
+//         - CheckIntervalSeconds is a positive integer
+//         - Rules is an array; each rule has all required fields, valid day
+//           names, hours in [0,23], StartHour <= EndHour, and a Preset that
+//           actually exists in RatePresets
+// ---------------------------------------------------------------------------
+void ValidateConfig()
+{
+	const nlohmann::json& cfg = CousinCustomRates::config;
+	int issueCount = 0;
+
+	// Helper lambdas to reduce repetition
+	auto warn = [&](const std::string& msg)
+	{
+		Log::GetLog()->warn("ValidateConfig: {}", msg);
+		++issueCount;
+	};
+
+	// ---- 1. Top-level structure ----------------------------------------
+	if (!cfg.contains("RatePresets") || !cfg["RatePresets"].is_object())
+	{
+		Log::GetLog()->error("ValidateConfig: 'RatePresets' key is missing or not an object — "
+			"no presets will be available.");
+		return; // Cannot meaningfully continue without presets
+	}
+
+	// ---- 2. Per-preset validation --------------------------------------
+	const std::vector<std::string> multiplierFields = {
+		"TamingSpeedMultiplier",
+		"XPMultiplier",
+		"HarvestAmountMultiplier",
+		"BabyMatureSpeedMultiplier",
+		"EggHatchSpeedMultiplier"
+	};
+
+	for (auto& [presetKey, preset] : cfg["RatePresets"].items())
+	{
+		if (!preset.is_object())
+		{
+			warn("Preset '" + presetKey + "' is not a JSON object — skipping.");
+			continue;
+		}
+
+		for (const auto& field : multiplierFields)
+		{
+			if (!preset.contains(field))
+			{
+				warn("Preset '" + presetKey + "': missing '" + field +
+					"' — will default to 1.0.");
+			}
+			else if (!preset[field].is_number())
+			{
+				warn("Preset '" + presetKey + "': '" + field +
+					"' is not a number — will default to 1.0.");
+			}
+			else if (preset[field].get<float>() <= 0.0f)
+			{
+				warn("Preset '" + presetKey + "': '" + field +
+					"' is <= 0 — this is likely a configuration mistake.");
+			}
+		}
+
+		if (preset.contains("Discord_Webhook") && preset["Discord_Webhook"].is_string())
+		{
+			const std::string url = preset["Discord_Webhook"].get<std::string>();
+			if (!url.empty() && url.rfind("https://", 0) != 0)
+				warn("Preset '" + presetKey + "': 'Discord_Webhook' does not start with "
+					"'https://' — the webhook POST will likely fail.");
+		}
+	}
+
+	// ---- 3. Schedule block validation ----------------------------------
+	if (cfg.contains("Schedule"))
+	{
+		const nlohmann::json& schedule = cfg["Schedule"];
+
+		if (!schedule.is_object())
+		{
+			warn("'Schedule' is not a JSON object.");
+		}
+		else
+		{
+			if (schedule.contains("Enabled") && !schedule["Enabled"].is_boolean())
+				warn("Schedule.Enabled is not a boolean.");
+
+			if (schedule.contains("CheckIntervalSeconds"))
+			{
+				if (!schedule["CheckIntervalSeconds"].is_number_integer())
+					warn("Schedule.CheckIntervalSeconds is not an integer.");
+				else if (schedule["CheckIntervalSeconds"].get<int>() < 1)
+					warn("Schedule.CheckIntervalSeconds is < 1 — will be clamped to 1 second.");
+			}
+
+			if (!schedule.contains("Rules") || !schedule["Rules"].is_array())
+			{
+				warn("Schedule.Rules is missing or not an array.");
+			}
+			else
+			{
+				const std::vector<std::string> validDays = {
+					"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"
+				};
+
+				int ruleIdx = 0;
+				for (const auto& rule : schedule["Rules"])
+				{
+					const std::string ruleId = "Schedule.Rules[" + std::to_string(ruleIdx++) + "]";
+
+					if (!rule.contains("Preset") || !rule.contains("Days") ||
+						!rule.contains("StartHour") || !rule.contains("EndHour"))
+					{
+						warn(ruleId + ": missing one or more required fields "
+							"(Preset, Days, StartHour, EndHour).");
+						continue;
+					}
+
+					// Preset must reference a known rate preset
+					if (rule["Preset"].is_string())
+					{
+						const std::string rulePreset = rule["Preset"].get<std::string>();
+						if (!cfg["RatePresets"].contains(rulePreset))
+							warn(ruleId + ": Preset '" + rulePreset +
+								"' does not exist in RatePresets.");
+					}
+					else
+					{
+						warn(ruleId + ": Preset is not a string.");
+					}
+
+					// Days validation
+					if (!rule["Days"].is_array())
+					{
+						warn(ruleId + ": Days is not an array.");
+					}
+					else
+					{
+						for (const auto& day : rule["Days"])
+						{
+							if (!day.is_string())
+							{
+								warn(ruleId + ": Days contains a non-string entry.");
+							}
+							else
+							{
+								const std::string dayStr = day.get<std::string>();
+								bool found = false;
+								for (const auto& v : validDays)
+									if (v == dayStr) { found = true; break; }
+								if (!found)
+									warn(ruleId + ": '" + dayStr + "' is not a valid day name. "
+										"Valid values: Sunday Monday Tuesday Wednesday Thursday Friday Saturday.");
+							}
+						}
+					}
+
+					// Hour range validation
+					if (!rule["StartHour"].is_number_integer() || !rule["EndHour"].is_number_integer())
+					{
+						warn(ruleId + ": StartHour and EndHour must be integers.");
+					}
+					else
+					{
+						const int startHour = rule["StartHour"].get<int>();
+						const int endHour   = rule["EndHour"].get<int>();
+
+						if (startHour < 0 || startHour > 23)
+							warn(ruleId + ": StartHour " + std::to_string(startHour) +
+								" is out of range [0, 23].");
+						if (endHour < 0 || endHour > 23)
+							warn(ruleId + ": EndHour " + std::to_string(endHour) +
+								" is out of range [0, 23].");
+						if (startHour > endHour)
+							warn(ruleId + ": StartHour (" + std::to_string(startHour) +
+								") > EndHour (" + std::to_string(endHour) +
+								"). Overnight ranges are not supported — "
+								"use two separate rules instead.");
+					}
+				}
+			}
+		}
+	}
+
+	// ---- 4. Summary ----------------------------------------------------
+	if (issueCount == 0)
+		Log::GetLog()->info("ValidateConfig: config.json passed validation with no issues.");
+	else
+		Log::GetLog()->warn("ValidateConfig: {} issue(s) found in config.json — "
+			"review the warnings above.", issueCount);
+}
+
+// ---------------------------------------------------------------------------
 // ReadConfig
 //   Loads config.json from the plugin folder into CousinCustomRates::config.
+//   Calls ValidateConfig() after parsing to log any structural issues.
 // ---------------------------------------------------------------------------
 void ReadConfig()
 {
@@ -21,6 +225,10 @@ void ReadConfig()
 		file >> CousinCustomRates::config;
 
 		Log::GetLog()->info("{} config loaded successfully.", PROJECT_NAME);
+
+		// Validate structure and log warnings for any suspicious values.
+		// This never throws — the plugin continues even with imperfect config.
+		ValidateConfig();
 	}
 	catch (const std::exception& error)
 	{
