@@ -83,8 +83,10 @@ void ChangeRatesRcon(RCONClientConnection* rcon_connection, RCONPacket* rcon_pac
 //   so the reply is sent back to the admin's chat window instead of the
 //   RCON socket.
 // ---------------------------------------------------------------------------
-void ChangeRatesConsole(AShooterPlayerController* player, FString* message, bool /*written_to_console*/)
+void ChangeRatesConsole(APlayerController* player_base, FString* message, bool /*written_to_console*/)
 {
+	AShooterPlayerController* player = static_cast<AShooterPlayerController*>(player_base);
+
 	FString reply;
 	FString presetName;
 

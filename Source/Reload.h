@@ -52,8 +52,10 @@ void ReloadConfigRcon(RCONClientConnection* rcon_connection, RCONPacket* rcon_pa
 //   Same logic as the RCON handler but replies to the admin's in-game
 //   console/chat instead of the RCON socket.
 // ---------------------------------------------------------------------------
-void ReloadConfigConsole(AShooterPlayerController* player, FString* /*message*/, bool /*written_to_console*/)
+void ReloadConfigConsole(APlayerController* player_base, FString* /*message*/, bool /*written_to_console*/)
 {
+	AShooterPlayerController* player = static_cast<AShooterPlayerController*>(player_base);
+
 	FString reply;
 
 	try
