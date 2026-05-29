@@ -2,32 +2,41 @@
 
 #include <fstream>
 #include <string>
+#include <ctime>          // std::time, std::tm, localtime_s / localtime_r
+#include <unordered_map>  // GetCurrentSchedulePreset day map
+
+// ---------------------------------------------------------------------------
+// Forward declaration
+//   ApplyRates is defined later in this file.  ArmTimedPresetExpiry (defined
+//   before it) fires a lambda that calls ApplyRates, so we need this forward
+//   declaration to allow the compiler to resolve the name at lambda compile time.
+// ---------------------------------------------------------------------------
+bool ApplyRates(const FString& presetName,
+                bool sendNotifications = true,
+                bool fromTimedExpiry   = false);
 
 // ---------------------------------------------------------------------------
 // ValidateConfig
-//   Inspects the loaded config for structural problems and logs warnings/
+//   Inspects the loaded config for structural problems and logs warnings /
 //   errors for anything suspicious.  Never throws — the plugin keeps running
 //   even when issues are found.  Call this immediately after parsing JSON so
 //   admins see actionable feedback in the server log on every (re-)load.
 //
-//   Checks performed:
-//     • Top-level keys: RatePresets (required), Schedule (optional)
-//     • Per preset:
-//         - Each of the 5 multiplier fields is present and a positive number
-//         - Discord_Webhook, if present, starts with "https://"
-//     • Schedule block (when present):
-//         - Enabled is a bool
-//         - CheckIntervalSeconds is a positive integer
-//         - Rules is an array; each rule has all required fields, valid day
-//           names, hours in [0,23], StartHour <= EndHour, and a Preset that
-//           actually exists in RatePresets
+//   Checks:
+//     • RatePresets (required, must be object)
+//     • Per preset: 5 multiplier fields present / positive numbers;
+//                   Discord_Webhook starts with "https://";
+//                   Duration (if present) is a positive integer
+//     • TimedPresets block: Enabled is bool
+//     • Schedule block: Enabled, CheckIntervalSeconds, Rules, per-rule fields,
+//                       valid day names, hour range, StartHour <= EndHour,
+//                       Preset references an existing rate preset
 // ---------------------------------------------------------------------------
 void ValidateConfig()
 {
 	const nlohmann::json& cfg = CousinCustomRates::config;
 	int issueCount = 0;
 
-	// Helper lambdas to reduce repetition
 	auto warn = [&](const std::string& msg)
 	{
 		Log::GetLog()->warn("ValidateConfig: {}", msg);
@@ -39,7 +48,7 @@ void ValidateConfig()
 	{
 		Log::GetLog()->error("ValidateConfig: 'RatePresets' key is missing or not an object — "
 			"no presets will be available.");
-		return; // Cannot meaningfully continue without presets
+		return;
 	}
 
 	// ---- 2. Per-preset validation --------------------------------------
@@ -62,32 +71,40 @@ void ValidateConfig()
 		for (const auto& field : multiplierFields)
 		{
 			if (!preset.contains(field))
-			{
-				warn("Preset '" + presetKey + "': missing '" + field +
-					"' — will default to 1.0.");
-			}
+				warn("Preset '" + presetKey + "': missing '" + field + "' — will default to 1.0.");
 			else if (!preset[field].is_number())
-			{
-				warn("Preset '" + presetKey + "': '" + field +
-					"' is not a number — will default to 1.0.");
-			}
+				warn("Preset '" + presetKey + "': '" + field + "' is not a number — will default to 1.0.");
 			else if (preset[field].get<float>() <= 0.0f)
-			{
-				warn("Preset '" + presetKey + "': '" + field +
-					"' is <= 0 — this is likely a configuration mistake.");
-			}
+				warn("Preset '" + presetKey + "': '" + field + "' is <= 0 — likely a configuration mistake.");
 		}
 
 		if (preset.contains("Discord_Webhook") && preset["Discord_Webhook"].is_string())
 		{
 			const std::string url = preset["Discord_Webhook"].get<std::string>();
 			if (!url.empty() && url.rfind("https://", 0) != 0)
-				warn("Preset '" + presetKey + "': 'Discord_Webhook' does not start with "
-					"'https://' — the webhook POST will likely fail.");
+				warn("Preset '" + presetKey + "': 'Discord_Webhook' does not start with 'https://'.");
+		}
+
+		if (preset.contains("Duration"))
+		{
+			if (!preset["Duration"].is_number_integer())
+				warn("Preset '" + presetKey + "': 'Duration' must be an integer (seconds).");
+			else if (preset["Duration"].get<int64_t>() <= 0)
+				warn("Preset '" + presetKey + "': 'Duration' is <= 0 — preset will not be timed.");
 		}
 	}
 
-	// ---- 3. Schedule block validation ----------------------------------
+	// ---- 3. TimedPresets block -----------------------------------------
+	if (cfg.contains("TimedPresets"))
+	{
+		const nlohmann::json& tp = cfg["TimedPresets"];
+		if (!tp.is_object())
+			warn("'TimedPresets' is not a JSON object.");
+		else if (tp.contains("Enabled") && !tp["Enabled"].is_boolean())
+			warn("TimedPresets.Enabled is not a boolean.");
+	}
+
+	// ---- 4. Schedule block validation ----------------------------------
 	if (cfg.contains("Schedule"))
 	{
 		const nlohmann::json& schedule = cfg["Schedule"];
@@ -127,25 +144,21 @@ void ValidateConfig()
 					if (!rule.contains("Preset") || !rule.contains("Days") ||
 						!rule.contains("StartHour") || !rule.contains("EndHour"))
 					{
-						warn(ruleId + ": missing one or more required fields "
-							"(Preset, Days, StartHour, EndHour).");
+						warn(ruleId + ": missing required fields (Preset, Days, StartHour, EndHour).");
 						continue;
 					}
 
-					// Preset must reference a known rate preset
 					if (rule["Preset"].is_string())
 					{
 						const std::string rulePreset = rule["Preset"].get<std::string>();
 						if (!cfg["RatePresets"].contains(rulePreset))
-							warn(ruleId + ": Preset '" + rulePreset +
-								"' does not exist in RatePresets.");
+							warn(ruleId + ": Preset '" + rulePreset + "' does not exist in RatePresets.");
 					}
 					else
 					{
 						warn(ruleId + ": Preset is not a string.");
 					}
 
-					// Days validation
 					if (!rule["Days"].is_array())
 					{
 						warn(ruleId + ": Days is not an array.");
@@ -162,48 +175,158 @@ void ValidateConfig()
 							{
 								const std::string dayStr = day.get<std::string>();
 								bool found = false;
-								for (const auto& v : validDays)
-									if (v == dayStr) { found = true; break; }
+								for (const auto& v : validDays) if (v == dayStr) { found = true; break; }
 								if (!found)
-									warn(ruleId + ": '" + dayStr + "' is not a valid day name. "
-										"Valid values: Sunday Monday Tuesday Wednesday Thursday Friday Saturday.");
+									warn(ruleId + ": '" + dayStr + "' is not a valid day name.");
 							}
 						}
 					}
 
-					// Hour range validation
 					if (!rule["StartHour"].is_number_integer() || !rule["EndHour"].is_number_integer())
 					{
 						warn(ruleId + ": StartHour and EndHour must be integers.");
 					}
 					else
 					{
-						const int startHour = rule["StartHour"].get<int>();
-						const int endHour   = rule["EndHour"].get<int>();
+						const int sh = rule["StartHour"].get<int>();
+						const int eh = rule["EndHour"].get<int>();
 
-						if (startHour < 0 || startHour > 23)
-							warn(ruleId + ": StartHour " + std::to_string(startHour) +
-								" is out of range [0, 23].");
-						if (endHour < 0 || endHour > 23)
-							warn(ruleId + ": EndHour " + std::to_string(endHour) +
-								" is out of range [0, 23].");
-						if (startHour > endHour)
-							warn(ruleId + ": StartHour (" + std::to_string(startHour) +
-								") > EndHour (" + std::to_string(endHour) +
-								"). Overnight ranges are not supported — "
-								"use two separate rules instead.");
+						if (sh < 0 || sh > 23)
+							warn(ruleId + ": StartHour " + std::to_string(sh) + " out of range [0,23].");
+						if (eh < 0 || eh > 23)
+							warn(ruleId + ": EndHour " + std::to_string(eh) + " out of range [0,23].");
+						if (sh > eh)
+							warn(ruleId + ": StartHour > EndHour — overnight ranges are not supported.");
 					}
 				}
 			}
 		}
 	}
 
-	// ---- 4. Summary ----------------------------------------------------
+	// ---- 5. Summary ----------------------------------------------------
 	if (issueCount == 0)
 		Log::GetLog()->info("ValidateConfig: config.json passed validation with no issues.");
 	else
-		Log::GetLog()->warn("ValidateConfig: {} issue(s) found in config.json — "
-			"review the warnings above.", issueCount);
+		Log::GetLog()->warn("ValidateConfig: {} issue(s) found — review warnings above.", issueCount);
+}
+
+// ---------------------------------------------------------------------------
+// GetCurrentSchedulePreset
+//   Evaluates the Schedule rules against the current server clock and returns
+//   the name of the first matching preset, or an empty string if no rule
+//   matches (or if the Schedule is disabled / not configured).
+//
+//   Used by both CheckSchedule (Timers.h) and the timed-preset expiry
+//   callback so that when a timed preset ends the scheduler resumes control
+//   if a rule currently applies.
+// ---------------------------------------------------------------------------
+std::string GetCurrentSchedulePreset()
+{
+	if (!CousinCustomRates::config.contains("Schedule")) return "";
+
+	const nlohmann::json& schedule = CousinCustomRates::config["Schedule"];
+	if (!schedule.value("Enabled", false))   return "";
+	if (!schedule.contains("Rules") || !schedule["Rules"].is_array()) return "";
+
+	// Function-local static — initialised once, no linker conflicts with Timers.h
+	static const std::unordered_map<std::string, int> s_dayMap = {
+		{"Sunday",0},{"Monday",1},{"Tuesday",2},{"Wednesday",3},
+		{"Thursday",4},{"Friday",5},{"Saturday",6}
+	};
+
+	std::time_t now = std::time(nullptr);
+	std::tm localTime{};
+#if defined(_WIN32)
+	localtime_s(&localTime, &now);
+#else
+	localtime_r(&now, &localTime);
+#endif
+
+	const int currentHour = localTime.tm_hour; // 0-23
+	const int currentWDay = localTime.tm_wday; // 0=Sunday … 6=Saturday
+
+	for (const auto& rule : schedule["Rules"])
+	{
+		if (!rule.contains("Preset") || !rule.contains("Days") ||
+			!rule.contains("StartHour") || !rule.contains("EndHour"))
+			continue;
+
+		const int startHour = rule.value("StartHour", 0);
+		const int endHour   = rule.value("EndHour",   23);
+
+		if (currentHour < startHour || currentHour > endHour) continue;
+
+		bool dayMatches = false;
+		for (const auto& dayEntry : rule["Days"])
+		{
+			if (!dayEntry.is_string()) continue;
+			auto it = s_dayMap.find(dayEntry.get<std::string>());
+			if (it != s_dayMap.end() && it->second == currentWDay) { dayMatches = true; break; }
+		}
+		if (!dayMatches) continue;
+
+		const std::string target = rule.value("Preset", "");
+		if (!target.empty()) return target;
+	}
+
+	return "";
+}
+
+// ---------------------------------------------------------------------------
+// ArmTimedPresetExpiry
+//   Schedules a one-shot API::Timer::DelayExecute to fire after durationSeconds.
+//   When it fires:
+//     1. Clears the in-memory timed state (expiry + fallback).
+//     2. Checks if a schedule rule currently applies — if so, that preset is
+//        used as the revert target; otherwise the captured fallback preset is used.
+//     3. Calls ApplyRates with fromTimedExpiry=true (so it does NOT re-arm
+//        another timed countdown, even if the fallback preset has a Duration field).
+//
+//   The identifier "CousinCustomRatesTimedPreset" lets any subsequent
+//   changerates command cancel the timer via UnloadTimer before it fires.
+// ---------------------------------------------------------------------------
+void ArmTimedPresetExpiry(int64_t durationSeconds)
+{
+	// API::Timer::DelayExecute takes an int — clamp safely
+	const int delayInt = (durationSeconds > 2147483647LL)
+		? 2147483647
+		: (durationSeconds < 1 ? 1 : static_cast<int>(durationSeconds));
+
+	API::Timer::Get().DelayExecute(
+		"CousinCustomRatesTimedPreset",
+		[]()
+		{
+			Log::GetLog()->info("TimedPreset: countdown expired — determining revert target.");
+
+			// Clear timed state
+			CousinCustomRates::timedPresetExpiry = 0;
+
+			// Decide where to revert: schedule takes priority over captured fallback
+			const std::string schedulePreset = GetCurrentSchedulePreset();
+			const std::string target = !schedulePreset.empty()
+				? schedulePreset
+				: CousinCustomRates::timedFallbackPreset;
+
+			CousinCustomRates::timedFallbackPreset.clear();
+
+			if (target.empty())
+			{
+				Log::GetLog()->warn("TimedPreset: no revert target found — rates unchanged.");
+				return;
+			}
+
+			Log::GetLog()->info("TimedPreset: reverting to '{}'{}.",
+				target,
+				!schedulePreset.empty() ? " (schedule match)" : " (captured fallback)");
+
+			// fromTimedExpiry=true — prevents re-arming a new timer even if the
+			// revert target itself has a Duration field in config.
+			ApplyRates(FString(target.c_str()), true, true);
+		},
+		delayInt
+	);
+
+	Log::GetLog()->info("ArmTimedPresetExpiry: timer armed ({}s).", delayInt);
 }
 
 // ---------------------------------------------------------------------------
@@ -226,8 +349,7 @@ void ReadConfig()
 
 		Log::GetLog()->info("{} config loaded successfully.", PROJECT_NAME);
 
-		// Validate structure and log warnings for any suspicious values.
-		// This never throws — the plugin continues even with imperfect config.
+		// Validate structure and log any issues — never throws.
 		ValidateConfig();
 	}
 	catch (const std::exception& error)
@@ -239,7 +361,8 @@ void ReadConfig()
 
 // ---------------------------------------------------------------------------
 // SaveState
-//   Persists the active preset name to status.json so it survives restarts.
+//   Persists the active preset name (and timed preset state, if active)
+//   to status.json so both survive server restarts.
 // ---------------------------------------------------------------------------
 void SaveState(const std::string& presetName)
 {
@@ -250,6 +373,13 @@ void SaveState(const std::string& presetName)
 
 		nlohmann::json stateJson;
 		stateJson["active_preset"] = presetName;
+
+		// Persist timed preset info only when a countdown is active
+		if (CousinCustomRates::timedPresetExpiry > 0)
+		{
+			stateJson["timed_expiry"]   = CousinCustomRates::timedPresetExpiry;
+			stateJson["timed_fallback"] = CousinCustomRates::timedFallbackPreset;
+		}
 
 		std::ofstream file{ path };
 		if (!file.is_open())
@@ -269,7 +399,9 @@ void SaveState(const std::string& presetName)
 
 // ---------------------------------------------------------------------------
 // LoadState
-//   Reads status.json and returns the last active preset name.
+//   Reads status.json, returns the last active preset name, and populates
+//   the timed preset globals (timedPresetExpiry, timedFallbackPreset) so
+//   Hooks.h can decide whether to resume or expire the countdown on restart.
 //   Returns an empty string if the file does not exist or is invalid.
 // ---------------------------------------------------------------------------
 std::string LoadState()
@@ -285,6 +417,10 @@ std::string LoadState()
 
 		nlohmann::json stateJson;
 		file >> stateJson;
+
+		// Restore timed preset state into globals (may be 0 / empty if not saved)
+		CousinCustomRates::timedPresetExpiry   = stateJson.value("timed_expiry",   static_cast<int64_t>(0));
+		CousinCustomRates::timedFallbackPreset = stateJson.value("timed_fallback", std::string(""));
 
 		return stateJson.value("active_preset", "");
 	}
@@ -409,16 +545,6 @@ void SendMessageToDiscord(const std::string& webhookUrl,
 // ---------------------------------------------------------------------------
 // BroadcastRateChange
 //   Sends a server-wide on-screen HUD notification to all connected players.
-//   Uses SendNotificationToAll so the message appears as a pop-up overlay
-//   rather than in the chat box.
-//
-//   Parameters used:
-//     color         - yellow, so it stands out against most backgrounds
-//     display_scale - 1.5f  (slightly larger than default for visibility)
-//     display_time  - 10.0f (seconds the notification stays on screen)
-//     icon          - nullptr (no custom icon)
-//
-//   Skips silently if message is empty.
 // ---------------------------------------------------------------------------
 void BroadcastRateChange(const std::string& message)
 {
@@ -426,7 +552,6 @@ void BroadcastRateChange(const std::string& message)
 		return;
 
 	FLinearColor color(1.0f, 0.9f, 0.0f, 1.0f); // yellow
-
 	AsaApi::GetApiUtils().SendNotificationToAll(color, 1.5f, 10.0f, nullptr, "{}", message.c_str());
 }
 
@@ -434,16 +559,27 @@ void BroadcastRateChange(const std::string& message)
 // ApplyRates
 //   Looks up presetName in config.json, writes all five multipliers into both
 //   the live AShooterGameMode (server authority) and AShooterGameState
-//   (replicated to clients / used by world ticking logic), then forces a net
-//   update so clients see the changes immediately.
+//   (replicated to clients), then forces a net update.
 //
-//   After that it saves state, sends a Discord message (rich embed or plain
-//   text), and broadcasts in-game.
+//   Parameters:
+//     presetName         — key in config.json RatePresets
+//     sendNotifications  — if false, skip in-game broadcast and Discord webhook
+//                          (used on server restart to silently restore rates)
+//     fromTimedExpiry    — if true, skip all timed-preset logic (used when
+//                          the expiry callback applies the fallback, and when
+//                          the InitGame hook restores state on restart)
+//
+//   Timed Preset Logic (when fromTimedExpiry == false):
+//     - Any running timed countdown is always cancelled first.
+//     - If the preset has a positive "Duration" field AND TimedPresets.Enabled
+//       is true: captures the fallback (first activation only), persists the
+//       expiry timestamp, and arms a DelayExecute one-shot timer.
+//     - Otherwise: clears the timed state.
 //
 //   Returns true on success, false if the preset was not found or if the
 //   GameMode / GameState pointer is not yet available.
 // ---------------------------------------------------------------------------
-bool ApplyRates(const FString& presetName, bool sendNotifications = true)
+bool ApplyRates(const FString& presetName, bool sendNotifications, bool fromTimedExpiry)
 {
 	const std::string presetKey = presetName.ToString();
 
@@ -463,10 +599,7 @@ bool ApplyRates(const FString& presetName, bool sendNotifications = true)
 		return false;
 	}
 
-	// Get live GameState pointer (replicated to all clients).
-	// Use IApiUtils::GetGameState() which reads directly from UWorld::GameState —
-	// avoids the "Failed to get offset of AGameModeBase.GetGameState" runtime crash
-	// that occurs when calling GetGameState() through the gameMode pointer.
+	// Get live GameState pointer
 	AShooterGameState* gameState = AsaApi::GetApiUtils().GetGameState();
 	if (!gameState)
 	{
@@ -476,6 +609,67 @@ bool ApplyRates(const FString& presetName, bool sendNotifications = true)
 
 	const nlohmann::json& preset = CousinCustomRates::config["RatePresets"][presetKey];
 
+	// ---------------------------------------------------------------------------
+	// Timed Preset Logic
+	//   Always cancel any existing countdown (safe even if none is running).
+	//   Then, unless this call itself came from the expiry callback, decide
+	//   whether to arm a new countdown.
+	// ---------------------------------------------------------------------------
+	API::Timer::Get().UnloadTimer("CousinCustomRatesTimedPreset");
+
+	if (!fromTimedExpiry)
+	{
+		const bool timedEnabled =
+			CousinCustomRates::config.contains("TimedPresets") &&
+			CousinCustomRates::config["TimedPresets"].value("Enabled", false);
+
+		const bool hasDuration =
+			preset.contains("Duration") &&
+			preset["Duration"].is_number_integer() &&
+			preset["Duration"].get<int64_t>() > 0;
+
+		if (timedEnabled && hasDuration)
+		{
+			const int64_t duration = preset["Duration"].get<int64_t>();
+
+			// Capture the fallback only on the FIRST timed preset activation.
+			// If a timed preset is already running, keep the original fallback
+			// so stacked timed presets always revert to the original state.
+			if (CousinCustomRates::timedPresetExpiry == 0)
+				CousinCustomRates::timedFallbackPreset = CousinCustomRates::lastPreset;
+
+			// Warn immediately if the fallback preset no longer exists in config
+			if (!CousinCustomRates::timedFallbackPreset.empty() &&
+				!CousinCustomRates::config["RatePresets"].contains(CousinCustomRates::timedFallbackPreset))
+			{
+				Log::GetLog()->warn(
+					"ApplyRates: timed fallback preset '{}' not found in RatePresets — "
+					"expiry will have no fallback unless a schedule rule matches.",
+					CousinCustomRates::timedFallbackPreset);
+			}
+
+			CousinCustomRates::timedPresetExpiry =
+				static_cast<int64_t>(std::time(nullptr)) + duration;
+
+			ArmTimedPresetExpiry(duration);
+
+			Log::GetLog()->info(
+				"ApplyRates: timed preset '{}' armed — expires in {}s, fallback='{}'.",
+				presetKey, duration, CousinCustomRates::timedFallbackPreset);
+		}
+		else
+		{
+			// Normal preset — clear any stale timed state
+			CousinCustomRates::timedPresetExpiry = 0;
+			CousinCustomRates::timedFallbackPreset.clear();
+		}
+	}
+	// else (fromTimedExpiry): timed state already managed by caller — don't touch it
+
+	// ---------------------------------------------------------------------------
+	// Apply multipliers
+	// ---------------------------------------------------------------------------
+
 	// 1. Update GameMode — server-side authority
 	gameMode->TamingSpeedMultiplierField()     = preset.value("TamingSpeedMultiplier",     1.0f);
 	gameMode->XPMultiplierField()              = preset.value("XPMultiplier",              1.0f);
@@ -483,10 +677,7 @@ bool ApplyRates(const FString& presetName, bool sendNotifications = true)
 	gameMode->BabyMatureSpeedMultiplierField() = preset.value("BabyMatureSpeedMultiplier", 1.0f);
 	gameMode->EggHatchSpeedMultiplierField()   = preset.value("EggHatchSpeedMultiplier",   1.0f);
 
-	// Maturation helper: when babies mature faster, cuddle (imprinting) intervals must
-	// scale inversely so imprinting remains achievable at high maturation speeds.
-	// Only adjust automatically if "BabyCuddleIntervalMultiplier" is not explicitly set
-	// in the preset — an explicit value in config always wins.
+	// Auto-scale cuddle interval when maturation is boosted
 	{
 		const float matureSpeed = preset.value("BabyMatureSpeedMultiplier", 1.0f);
 		const float cuddleInterval = preset.contains("BabyCuddleIntervalMultiplier")
@@ -496,18 +687,12 @@ bool ApplyRates(const FString& presetName, bool sendNotifications = true)
 		gameMode->BabyCuddleIntervalMultiplierField() = cuddleInterval;
 	}
 
-	// Ensure singleplayer overrides are disabled so the live GameMode multipliers
-	// are respected by the maturation tick logic.
 	gameMode->bUseSingleplayerSettingsField() = false;
 
-	// 2. Update GameState — used by world ticking logic and replicated to clients.
-	// Note: BabyMatureSpeedMultiplierField does NOT exist in AShooterGameState;
-	//       it is authoritative only in GameMode (already set above).
-	//       EggHatchSpeedMultiplierField exists in both classes and must be mirrored
-	//       here so the client UI and incubation ticking stay in sync.
+	// 2. Update GameState — replicated to clients
 	gameState->EggHatchSpeedMultiplierField() = preset.value("EggHatchSpeedMultiplier", 1.0f);
 
-	// 3. Force a network update so clients receive the new GameState values immediately
+	// 3. Force net update
 	gameState->ForceNetUpdate(false, true, false);
 
 	Log::GetLog()->info(
@@ -521,20 +706,16 @@ bool ApplyRates(const FString& presetName, bool sendNotifications = true)
 		preset.value("EggHatchSpeedMultiplier",   1.0f)
 	);
 
-	// Persist choice for server restarts
+	// Persist active preset (and timed state) for restart survival
 	CousinCustomRates::lastPreset = presetKey;
 	SaveState(presetKey);
 
-	// In-game broadcast and Discord notification are only sent when rates are
-	// actively changed (e.g. via RCON or the scheduler), NOT when the plugin
-	// silently restores the saved preset on server restart.
+	// In-game broadcast and Discord notification — skipped on silent restores
+	// and when called from the timed expiry callback (which will have its own
+	// notifications via the normal sendNotifications=true path).
 	if (sendNotifications)
 	{
-		// In-game broadcast (optional — empty string skips)
 		BroadcastRateChange(preset.value("BroadcastMessage", ""));
-
-		// Discord notification — rich embed if configured, plain text otherwise.
-		// Empty webhook URL skips silently.
 		SendMessageToDiscord(preset.value("Discord_Webhook", ""), presetKey, preset);
 	}
 

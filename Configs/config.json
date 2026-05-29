@@ -29,7 +29,26 @@
       "HarvestAmountMultiplier": 10.0,
       "BabyMatureSpeedMultiplier": 25.0,
       "EggHatchSpeedMultiplier": 25.0
+    },
+    "event_rates": {
+      "Duration": 7200,
+      "BroadcastMessage": "🎉 2-hour EVENT rates are now ACTIVE!",
+      "Discord_Webhook": "",
+      "Discord_Embed": {
+        "Title": "🎉 Event Rates Active (2h)",
+        "Description": "Boosted event rates are live for 2 hours! Rates will revert automatically.",
+        "Color": 15844367,
+        "Footer": "CousinCustomRates"
+      },
+      "TamingSpeedMultiplier": 25.0,
+      "XPMultiplier": 25.0,
+      "HarvestAmountMultiplier": 50.0,
+      "BabyMatureSpeedMultiplier": 100.0,
+      "EggHatchSpeedMultiplier": 100.0
     }
+  },
+  "TimedPresets": {
+    "Enabled": true
   },
   "Schedule": {
     "Enabled": false,

@@ -57,11 +57,59 @@ DECLARE_HOOK(
 	Log::GetLog()->info("InitGame hook: re-applying saved preset '{}'.", savedPreset);
 
 	// 4. Apply the multipliers into the freshly initialised GameMode (_this).
-	//    Pass sendNotifications=false so Discord and in-game broadcasts are
-	//    suppressed — this is a silent restore on restart, not a rate change.
-	if (!ApplyRates(FString(savedPreset.c_str()), false))
+	//    Pass sendNotifications=false  — silent restore, not a rate change.
+	//    Pass fromTimedExpiry=true     — we handle timed state manually below
+	//                                    so ApplyRates must not overwrite it.
+	if (!ApplyRates(FString(savedPreset.c_str()), false, true))
 	{
 		Log::GetLog()->error("InitGame hook: failed to apply saved preset '{}'.", savedPreset);
+	}
+
+	// 5. Handle persisted timed preset state.
+	//    LoadState() already populated timedPresetExpiry and timedFallbackPreset
+	//    from status.json.  Decide what to do based on whether the timer has
+	//    already expired during the server downtime.
+	if (CousinCustomRates::timedPresetExpiry > 0)
+	{
+		const int64_t now       = static_cast<int64_t>(std::time(nullptr));
+		const int64_t remaining = CousinCustomRates::timedPresetExpiry - now;
+
+		if (remaining <= 0)
+		{
+			// Timer expired while the server was down — apply the fallback now.
+			Log::GetLog()->info(
+				"InitGame hook: timed preset expired during downtime — applying fallback.");
+
+			CousinCustomRates::timedPresetExpiry = 0;
+
+			const std::string schedPreset = GetCurrentSchedulePreset();
+			const std::string target =
+				!schedPreset.empty() ? schedPreset : CousinCustomRates::timedFallbackPreset;
+
+			CousinCustomRates::timedFallbackPreset.clear();
+
+			if (!target.empty())
+			{
+				// sendNotifications=true  — real expiry, players should be notified
+				// fromTimedExpiry=true    — don't re-arm a timer for the fallback
+				ApplyRates(FString(target.c_str()), true, true);
+			}
+			else
+			{
+				Log::GetLog()->warn(
+					"InitGame hook: timed preset expired but no fallback found — "
+					"rates unchanged.");
+			}
+		}
+		else
+		{
+			// Timer still valid — re-arm with the remaining seconds.
+			Log::GetLog()->info(
+				"InitGame hook: timed preset still active, re-arming with {}s remaining.",
+				remaining);
+
+			ArmTimedPresetExpiry(remaining);
+		}
 	}
 }
 

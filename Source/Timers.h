@@ -71,9 +71,17 @@ static const std::unordered_map<std::string, int> s_dayNameMap = {
 //   Called by TimerCallback() when the interval has elapsed.
 //   Finds the first matching rule and calls ApplyRates() if the preset has
 //   changed. Safe to call frequently — exits early if nothing needs to change.
+//
+//   NOTE: While a timed preset is active (timedPresetExpiry > 0) this
+//   function returns immediately.  The scheduler resumes automatically after
+//   the timed preset expires (the expiry callback calls GetCurrentSchedulePreset
+//   to determine the correct revert target).
 // ---------------------------------------------------------------------------
 void CheckSchedule()
 {
+	// Block schedule switching while a timed preset countdown is running.
+	if (CousinCustomRates::timedPresetExpiry > 0) return;
+
 	if (!CousinCustomRates::config.contains("Schedule")) return;
 
 	const nlohmann::json& schedule = CousinCustomRates::config["Schedule"];

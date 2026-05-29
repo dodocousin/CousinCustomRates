@@ -2,7 +2,7 @@
   // ===========================================================================
   // CousinCustomRates — config.json
   //
-  // RCON commands:
+  // RCON / in-game console commands:
   //   changerates <preset_name>      — activate a preset immediately
   //   CousinCustomRates.Reload       — hot-reload this file without restart
   // ===========================================================================
@@ -12,7 +12,7 @@
     // -------------------------------------------------------------------------
     // Define as many named presets as you like.
     // Each preset is identified by its JSON key (e.g. "weekend_rates").
-    // Activate via RCON: changerates weekend_rates
+    // Activate via RCON / console: changerates weekend_rates
     // -------------------------------------------------------------------------
 
     "weekend_rates": {
@@ -27,7 +27,6 @@
 
       // Optional rich embed configuration for the Discord notification.
       // If this block is absent, a plain text message is sent instead.
-      // All fields below are optional (sensible defaults apply).
       "Discord_Embed": {
         "Title":       "⚡ Weekend Rates Activated",
         "Description": "Server is now running boosted weekend rates!",
@@ -41,7 +40,6 @@
       },
 
       // ---- Rate Multipliers ------------------------------------------------
-      // These are applied directly to the live AShooterGameMode instance.
       "TamingSpeedMultiplier":     10.0,
       "XPMultiplier":              10.0,
       "HarvestAmountMultiplier":   20.0,
@@ -63,9 +61,77 @@
       "HarvestAmountMultiplier":   10.0,
       "BabyMatureSpeedMultiplier": 25.0,
       "EggHatchSpeedMultiplier":   25.0
+    },
+
+    // -------------------------------------------------------------------------
+    // TIMED PRESET EXAMPLE
+    //
+    // Adding a "Duration" field (integer, seconds) to any preset makes it a
+    // timed preset.  When it is activated via "changerates event_rates":
+    //
+    //   1. The rates apply immediately (broadcast + Discord fire as normal).
+    //   2. A countdown starts for the specified number of seconds.
+    //   3. While the countdown is active:
+    //        • The scheduler (Schedule rules) is paused — it cannot override
+    //          the timed preset mid-event.
+    //   4. When the countdown expires:
+    //        • If a Schedule rule currently matches the time → that preset is
+    //          activated (the scheduler resumes control naturally).
+    //        • Otherwise → the preset that was active BEFORE the timed preset
+    //          was launched is restored.
+    //        • The revert always fires with full notifications (broadcast + Discord).
+    //
+    // RESTART SURVIVAL:
+    //   The expiry timestamp is saved to status.json.  On the next server start:
+    //     • If the timer already expired → the fallback is applied immediately.
+    //     • If time remains → the countdown is re-armed with the remaining seconds.
+    //
+    // STACKING:
+    //   If you activate a second timed preset while one is already running,
+    //   the countdown resets to the new duration but the fallback target is
+    //   NOT changed — it stays as the original pre-event preset.
+    //
+    // FEATURE TOGGLE:
+    //   Set TimedPresets.Enabled = false to ignore all Duration fields and treat
+    //   every preset as a normal (permanent) preset change.
+    //
+    // NOTE: The "Duration" field is silently ignored when TimedPresets.Enabled
+    //       is false — no errors are logged.
+    // -------------------------------------------------------------------------
+    "event_rates": {
+
+      // Duration in SECONDS before the preset automatically reverts.
+      // 7200 = 2 hours.  Remove this field (or set Enabled=false) for a
+      // permanent preset with no auto-revert.
+      "Duration": 7200,
+
+      "BroadcastMessage": "🎉 2-hour EVENT rates are now ACTIVE!",
+      "Discord_Webhook":  "",
+      "Discord_Embed": {
+        "Title":       "🎉 Event Rates Active (2h)",
+        "Description": "Boosted event rates are live for 2 hours! Rates will revert automatically.",
+        "Color":       15844367,
+        "Footer":      "CousinCustomRates"
+      },
+      "TamingSpeedMultiplier":     25.0,
+      "XPMultiplier":              25.0,
+      "HarvestAmountMultiplier":   50.0,
+      "BabyMatureSpeedMultiplier": 100.0,
+      "EggHatchSpeedMultiplier":   100.0
     }
 
     // Add more presets here following the same structure...
+  },
+
+  // ===========================================================================
+  // TimedPresets (OPTIONAL)
+  //
+  // Master switch for the timed preset feature.
+  // When Enabled = false, all "Duration" fields in presets are ignored and
+  // every changerates call behaves as a permanent (non-timed) switch.
+  // ===========================================================================
+  "TimedPresets": {
+    "Enabled": true
   },
 
   // ===========================================================================
@@ -83,6 +149,11 @@
   //   the current hour (0-23, 24h format) is applied.
   //   If the matching preset is already active, nothing happens.
   //   If NO rule matches the current time, the active preset is left unchanged.
+  //
+  // TIMED PRESET INTERACTION:
+  //   While a timed preset countdown is running, the Schedule is paused.
+  //   When the timed preset expires, the scheduler resumes immediately —
+  //   if a rule matches the current time, that preset is applied as the revert.
   //
   // OVERNIGHT RANGES:
   //   StartHour must be <= EndHour. For overnight coverage (e.g. 22:00-02:00)
