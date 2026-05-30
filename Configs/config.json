@@ -53,6 +53,7 @@
   "Schedule": {
     "Enabled": false,
     "CheckIntervalSeconds": 60,
+    "DefaultPreset": "normal_rates",
     "Rules": [
       {
         "Preset": "weekend_rates",

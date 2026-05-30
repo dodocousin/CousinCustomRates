@@ -178,6 +178,13 @@
     // Minimum meaningful value is 60 (once per minute).
     "CheckIntervalSeconds": 60,
 
+    // Preset to apply when NO schedule rule matches the current time.
+    // Without this, the active preset simply stays unchanged when time gaps
+    // exist between rules (e.g. Friday 16:00 rule ends Sunday 16:00 but
+    // your next rule only starts Sunday 17:00 — Sunday 16:XX would have no match).
+    // Remove this field or leave it empty ("") to disable the fallback behaviour.
+    "DefaultPreset": "normal_rates",
+
     "Rules": [
 
       // -----------------------------------------------------------------------

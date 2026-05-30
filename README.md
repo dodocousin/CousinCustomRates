@@ -214,6 +214,7 @@ Automatically activates presets based on the current day and time. When disabled
 |---|---|---|
 | `Enabled` | `bool` | Set to `true` to activate the scheduler. Default: `false`. |
 | `CheckIntervalSeconds` | `integer` | How often the rules are evaluated (in seconds). Minimum useful value: `60`. |
+| `DefaultPreset` | `string` | ❌ Optional. Preset to apply when **no rule matches** the current time. If omitted, the active preset stays unchanged when there are gaps between rules. |
 | `Rules` | `array` | Ordered list of schedule rules. Two formats are supported — see below. |
 
 ---
@@ -279,7 +280,8 @@ Applies the **same hour window to every listed day** independently. Simpler for 
 
 1. Rules are evaluated **in order** — the **first matching rule wins**.
 2. If the matched preset is **already active**, nothing happens (no Discord spam).
-3. If **no rule matches**, the active preset is left unchanged.
+3. If **no rule matches** and `DefaultPreset` is set → the default preset is applied.
+4. If **no rule matches** and no `DefaultPreset` is set → the active preset is left unchanged.
 
 > **Timezone:** The scheduler uses the **server machine's local timezone** as configured in the OS.
 

@@ -126,6 +126,18 @@ void ValidateConfig()
 					warn("Schedule.CheckIntervalSeconds is < 1 — will be clamped to 1 second.");
 			}
 
+			if (schedule.contains("DefaultPreset"))
+			{
+				if (!schedule["DefaultPreset"].is_string())
+					warn("Schedule.DefaultPreset is not a string.");
+				else
+				{
+					const std::string dp = schedule["DefaultPreset"].get<std::string>();
+					if (!dp.empty() && !cfg["RatePresets"].contains(dp))
+						warn("Schedule.DefaultPreset '" + dp + "' does not exist in RatePresets.");
+				}
+			}
+
 			if (!schedule.contains("Rules") || !schedule["Rules"].is_array())
 			{
 				warn("Schedule.Rules is missing or not an array.");
@@ -356,7 +368,8 @@ std::string GetCurrentSchedulePreset()
 		if (matches) return target;
 	}
 
-	return "";
+	// No rule matched — fall back to DefaultPreset if configured
+	return schedule.value("DefaultPreset", "");
 }
 
 // ---------------------------------------------------------------------------
