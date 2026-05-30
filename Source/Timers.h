@@ -69,89 +69,30 @@ static const std::unordered_map<std::string, int> s_dayNameMap = {
 // ---------------------------------------------------------------------------
 // CheckSchedule
 //   Called by TimerCallback() when the interval has elapsed.
-//   Finds the first matching rule and calls ApplyRates() if the preset has
-//   changed. Safe to call frequently — exits early if nothing needs to change.
+//   Delegates all rule evaluation to GetCurrentSchedulePreset() (Utils.h)
+//   which supports both the new day-range format and the legacy Days-array
+//   format, as well as per-rule Enabled toggles and timed-preset blocking.
 //
-//   NOTE: While a timed preset is active (timedPresetExpiry > 0) this
-//   function returns immediately.  The scheduler resumes automatically after
-//   the timed preset expires (the expiry callback calls GetCurrentSchedulePreset
-//   to determine the correct revert target).
+//   Exits early if:
+//     • A timed preset countdown is active (timedPresetExpiry > 0)
+//     • GetCurrentSchedulePreset() returns an empty string (no rule matches)
+//     • The matched preset is already the active one (no-op, no Discord spam)
 // ---------------------------------------------------------------------------
 void CheckSchedule()
 {
 	// Block schedule switching while a timed preset countdown is running.
 	if (CousinCustomRates::timedPresetExpiry > 0) return;
 
-	if (!CousinCustomRates::config.contains("Schedule")) return;
+	const std::string targetPreset = GetCurrentSchedulePreset();
+	if (targetPreset.empty()) return;
+	if (targetPreset == CousinCustomRates::lastPreset) return;
 
-	const nlohmann::json& schedule = CousinCustomRates::config["Schedule"];
+	Log::GetLog()->info(
+		"Schedule: switching from '{}' to '{}'.",
+		CousinCustomRates::lastPreset, targetPreset
+	);
 
-	if (!schedule.value("Enabled", false)) return;
-
-	if (!schedule.contains("Rules") || !schedule["Rules"].is_array()) return;
-
-	// Get current local time from the server OS clock
-	std::time_t now = std::time(nullptr);
-	std::tm localTime{};
-
-#if defined(_WIN32)
-	localtime_s(&localTime, &now);   // thread-safe Windows version
-#else
-	localtime_r(&now, &localTime);   // thread-safe POSIX version
-#endif
-
-	const int currentHour = localTime.tm_hour; // 0-23
-	const int currentWDay = localTime.tm_wday; // 0=Sunday … 6=Saturday
-
-	// Iterate rules in order — first match wins
-	for (const auto& rule : schedule["Rules"])
-	{
-		// --- Validate required fields ---
-		if (!rule.contains("Preset") || !rule.contains("Days") ||
-			!rule.contains("StartHour") || !rule.contains("EndHour"))
-		{
-			Log::GetLog()->warn("Schedule: skipping rule with missing fields.");
-			continue;
-		}
-
-		const int startHour = rule.value("StartHour", 0);
-		const int endHour   = rule.value("EndHour",   23);
-
-		// Check hour range [startHour, endHour] inclusive
-		if (currentHour < startHour || currentHour > endHour)
-			continue;
-
-		// Check if current weekday is in the rule's Days list
-		bool dayMatches = false;
-		for (const auto& dayEntry : rule["Days"])
-		{
-			if (!dayEntry.is_string()) continue;
-
-			auto it = s_dayNameMap.find(dayEntry.get<std::string>());
-			if (it != s_dayNameMap.end() && it->second == currentWDay)
-			{
-				dayMatches = true;
-				break;
-			}
-		}
-
-		if (!dayMatches) continue;
-
-		// Rule matched — apply only if different from the currently active preset
-		const std::string targetPreset = rule.value("Preset", "");
-		if (targetPreset.empty()) continue;
-
-		if (targetPreset == CousinCustomRates::lastPreset)
-			return; // Already active, nothing to do
-
-		Log::GetLog()->info(
-			"Schedule: switching from '{}' to '{}' (day={}, hour={}).",
-			CousinCustomRates::lastPreset, targetPreset, currentWDay, currentHour
-		);
-
-		ApplyRates(FString(targetPreset.c_str()));
-		return; // First match wins — stop evaluating further rules
-	}
+	ApplyRates(FString(targetPreset.c_str()));
 }
 
 // ---------------------------------------------------------------------------

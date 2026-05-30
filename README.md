@@ -198,9 +198,9 @@ If you activate a second timed preset while one is already running, the countdow
 
 ### Section 3 — `Schedule` (optional)
 
-Automatically activates presets based on the current day of the week and hour. When disabled, **no timer is registered** and there is zero runtime overhead.
+Automatically activates presets based on the current day and time. When disabled, **no timer is registered** and there is zero runtime overhead.
 
-> **Timed preset interaction** — While a timed preset countdown is running, the Schedule is **paused**. It resumes automatically when the timed preset expires.
+> **Timed preset interaction** — While a timed preset countdown is running, the Schedule is **paused**. It resumes automatically when the timed preset expires. If a schedule rule matches at the moment of expiry, that preset is used as the revert target.
 
 ```json
 "Schedule": {
@@ -214,33 +214,74 @@ Automatically activates presets based on the current day of the week and hour. W
 |---|---|---|
 | `Enabled` | `bool` | Set to `true` to activate the scheduler. Default: `false`. |
 | `CheckIntervalSeconds` | `integer` | How often the rules are evaluated (in seconds). Minimum useful value: `60`. |
-| `Rules` | `array` | Ordered list of schedule rules (see below). |
+| `Rules` | `array` | Ordered list of schedule rules. Two formats are supported — see below. |
 
-#### Rule fields
+---
+
+#### Rule Format 1 — Day-Range (recommended)
+
+Defines a **continuous time window** that spans from a start day+hour to an end day+hour. This is the cleanest way to express "Friday evening through Sunday afternoon":
 
 | Field | Type | Description |
 |---|---|---|
-| `Preset` | `string` | The preset key to activate when this rule matches (must exist in `RatePresets`) |
-| `Days` | `array of strings` | Days of the week this rule applies to. Valid values: `"Sunday"` `"Monday"` `"Tuesday"` `"Wednesday"` `"Thursday"` `"Friday"` `"Saturday"` |
-| `StartHour` | `integer` | Hour to start (0–23, 24h format, **inclusive**) |
-| `EndHour` | `integer` | Hour to end (0–23, 24h format, **inclusive**). Must be ≥ `StartHour`. |
+| `Preset` | `string` | Preset to activate when this rule matches |
+| `Enabled` | `bool` | Set to `false` to skip this rule without deleting it. Defaults to `true`. |
+| `StartDay` | `string` | Day the window opens. Valid values: `"Sunday"` `"Monday"` `"Tuesday"` `"Wednesday"` `"Thursday"` `"Friday"` `"Saturday"` |
+| `StartHour` | `integer` | Hour the window opens (0–23, 24h, **inclusive**) |
+| `EndDay` | `string` | Day the window closes (same valid values as `StartDay`) |
+| `EndHour` | `integer` | Hour the window closes (0–23, 24h, **inclusive**) |
+
+The window is evaluated as a continuous week-position (`dayIndex × 24 + hour`). If `EndDay:EndHour` is earlier in the week than `StartDay:StartHour`, the range **wraps automatically** over the Sunday midnight boundary.
+
+**Example — Friday 16:00 → Sunday 16:00:**
+```json
+{
+  "Preset":    "weekend_rates",
+  "StartDay":  "Friday",
+  "StartHour": 16,
+  "EndDay":    "Sunday",
+  "EndHour":   16
+}
+```
+This matches: Friday 16h–23h, all of Saturday, and Sunday 0h–16h. ✅
+
+**Example — disabled rule (temporarily off):**
+```json
+{
+  "Enabled":   false,
+  "Preset":    "event_rates",
+  "StartDay":  "Saturday",
+  "StartHour": 12,
+  "EndDay":    "Saturday",
+  "EndHour":   18
+}
+```
+
+---
+
+#### Rule Format 2 — Days Array (legacy, still supported)
+
+Applies the **same hour window to every listed day** independently. Simpler for cases that don't need continuous cross-day ranges:
+
+| Field | Type | Description |
+|---|---|---|
+| `Preset` | `string` | Preset to activate when this rule matches |
+| `Enabled` | `bool` | Optional toggle — same as Format 1 |
+| `Days` | `array of strings` | Days this rule applies to |
+| `StartHour` | `integer` | Hour to start (0–23, **inclusive**) |
+| `EndHour` | `integer` | Hour to end (0–23, **inclusive**). Must be ≥ `StartHour`. |
+
+> Overnight ranges (`StartHour > EndHour`) are **not supported** in this format.
+
+---
 
 #### How rule matching works
 
 1. Rules are evaluated **in order** — the **first matching rule wins**.
-2. A rule matches when **both** conditions are true:
-   - The current day name is in the `Days` list.
-   - The current hour (0–23) is between `StartHour` and `EndHour` inclusive.
-3. If the matching preset is **already active**, nothing happens (no redundant re-application or Discord spam).
-4. If **no rule matches** the current time slot, the active preset is left unchanged.
+2. If the matched preset is **already active**, nothing happens (no Discord spam).
+3. If **no rule matches**, the active preset is left unchanged.
 
 > **Timezone:** The scheduler uses the **server machine's local timezone** as configured in the OS.
-
-> **Overnight ranges** (e.g. 22:00 – 02:00) are **not supported** in a single rule. Use two rules as a workaround:
-> ```json
-> { "Preset": "night_rates", "Days": [...], "StartHour": 22, "EndHour": 23 },
-> { "Preset": "night_rates", "Days": [...], "StartHour": 0,  "EndHour": 2  }
-> ```
 
 ---
 
@@ -351,16 +392,18 @@ To clear the saved preset and revert to native `GameUserSettings.ini` defaults o
     "CheckIntervalSeconds": 60,
     "Rules": [
       {
-        "Preset": "weekend_rates",
-        "Days": ["Friday", "Saturday", "Sunday"],
-        "StartHour": 18,
-        "EndHour": 23
+        "Preset":    "weekend_rates",
+        "StartDay":  "Friday",
+        "StartHour": 16,
+        "EndDay":    "Sunday",
+        "EndHour":   16
       },
       {
-        "Preset": "normal_rates",
-        "Days": ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"],
-        "StartHour": 0,
-        "EndHour": 17
+        "Preset":    "normal_rates",
+        "StartDay":  "Sunday",
+        "StartHour": 17,
+        "EndDay":    "Friday",
+        "EndHour":   15
       }
     ]
   }

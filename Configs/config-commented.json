@@ -137,27 +137,39 @@
   // ===========================================================================
   // Schedule (OPTIONAL)
   //
-  // Automatically activates presets based on the current day and hour.
+  // Automatically activates presets based on the current day and time.
   // Set "Enabled" to true to start the timer. Set to false to disable
   // completely — no timer is registered and there is zero overhead.
   //
   // TIMEZONE: Uses the SERVER machine's local OS timezone.
   //
   // RULE MATCHING:
-  //   Rules are checked in ORDER. The FIRST rule whose Days list contains the
-  //   current weekday AND whose [StartHour, EndHour] range (inclusive) contains
-  //   the current hour (0-23, 24h format) is applied.
-  //   If the matching preset is already active, nothing happens.
+  //   Rules are checked in ORDER. The FIRST matching rule wins.
+  //   If the matching preset is already active, nothing happens (no spam).
   //   If NO rule matches the current time, the active preset is left unchanged.
+  //
+  // TWO RULE FORMATS — both can coexist in the same Rules array:
+  //
+  //   ① DAY-RANGE FORMAT (recommended):
+  //       "StartDay" / "StartHour" → "EndDay" / "EndHour"
+  //       Defines a continuous window across one or more days.
+  //       Example: Friday 16:00 → Sunday 16:00 covers:
+  //         Friday 16h through Saturday 23h AND Sunday 0h through 16h.
+  //       Ranges that cross the Sunday boundary wrap automatically.
+  //
+  //   ② DAYS-ARRAY FORMAT (legacy, still supported):
+  //       "Days": [...], "StartHour": N, "EndHour": N
+  //       Applies the same hour window to every listed day independently.
+  //       Overnight ranges (StartHour > EndHour) are NOT supported here.
+  //
+  // PER-RULE ENABLED TOGGLE:
+  //   Add "Enabled": false to any rule to disable it without deleting it.
+  //   Omitting the field defaults to enabled.
   //
   // TIMED PRESET INTERACTION:
   //   While a timed preset countdown is running, the Schedule is paused.
   //   When the timed preset expires, the scheduler resumes immediately —
-  //   if a rule matches the current time, that preset is applied as the revert.
-  //
-  // OVERNIGHT RANGES:
-  //   StartHour must be <= EndHour. For overnight coverage (e.g. 22:00-02:00)
-  //   use two separate rules: one for 22-23 and one for 0-2.
+  //   if a rule matches at that moment, that preset is applied as the revert.
   // ===========================================================================
   "Schedule": {
     "Enabled": false,
@@ -167,24 +179,55 @@
     "CheckIntervalSeconds": 60,
 
     "Rules": [
+
+      // -----------------------------------------------------------------------
+      // DAY-RANGE EXAMPLE: Friday 16:00 → Sunday 16:00 (weekend boost)
+      //   Covers Friday 16h through all of Saturday and up to Sunday 16h.
+      //   The range wraps the week boundary automatically.
+      // -----------------------------------------------------------------------
       {
-        // Which preset to activate when this rule matches
-        "Preset": "weekend_rates",
-
-        // Which days of the week this rule applies to
-        // Valid values: "Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"
-        "Days": ["Friday", "Saturday", "Sunday"],
-
-        // Active from 18:00 to 23:59 (6 PM to 11:59 PM) — hour range is INCLUSIVE
-        "StartHour": 18,
-        "EndHour":   23
+        "Preset":    "weekend_rates",
+        "StartDay":  "Friday",
+        "StartHour": 16,
+        "EndDay":    "Sunday",
+        "EndHour":   16
       },
+
+      // -----------------------------------------------------------------------
+      // DAY-RANGE EXAMPLE: Sunday 17:00 → Friday 15:00 (normal weekday rates)
+      //   Covers the rest of the week that the weekend rule doesn't.
+      // -----------------------------------------------------------------------
       {
-        "Preset": "normal_rates",
-        "Days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
-        "StartHour": 0,
-        "EndHour":   17
+        "Preset":    "normal_rates",
+        "StartDay":  "Sunday",
+        "StartHour": 17,
+        "EndDay":    "Friday",
+        "EndHour":   15
+      },
+
+      // -----------------------------------------------------------------------
+      // DISABLED RULE EXAMPLE: Saturday 12:00 → 18:00 (temporarily off)
+      //   "Enabled": false skips this rule without deleting it.
+      //   Remove the field or set it to true to re-enable.
+      // -----------------------------------------------------------------------
+      {
+        "Enabled":   false,
+        "Preset":    "event_rates",
+        "StartDay":  "Saturday",
+        "StartHour": 12,
+        "EndDay":    "Saturday",
+        "EndHour":   18
       }
+
+      // -----------------------------------------------------------------------
+      // LEGACY DAYS-ARRAY EXAMPLE (still works):
+      // {
+      //   "Preset": "normal_rates",
+      //   "Days": ["Monday","Tuesday","Wednesday","Thursday"],
+      //   "StartHour": 0,
+      //   "EndHour":   23
+      // }
+      // -----------------------------------------------------------------------
     ]
   }
 }

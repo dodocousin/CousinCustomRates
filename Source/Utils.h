@@ -135,68 +135,110 @@ void ValidateConfig()
 				const std::vector<std::string> validDays = {
 					"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"
 				};
+				auto isValidDay = [&](const std::string& d) {
+					for (const auto& v : validDays) if (v == d) return true;
+					return false;
+				};
 
 				int ruleIdx = 0;
 				for (const auto& rule : schedule["Rules"])
 				{
 					const std::string ruleId = "Schedule.Rules[" + std::to_string(ruleIdx++) + "]";
 
-					if (!rule.contains("Preset") || !rule.contains("Days") ||
-						!rule.contains("StartHour") || !rule.contains("EndHour"))
+					// Enabled field (optional — both formats)
+					if (rule.contains("Enabled") && !rule["Enabled"].is_boolean())
+						warn(ruleId + ": 'Enabled' must be a boolean.");
+
+					// Preset field (required — both formats)
+					if (!rule.contains("Preset") || !rule["Preset"].is_string())
 					{
-						warn(ruleId + ": missing required fields (Preset, Days, StartHour, EndHour).");
+						warn(ruleId + ": missing or invalid 'Preset' field.");
 						continue;
 					}
+					const std::string rulePreset = rule["Preset"].get<std::string>();
+					if (!cfg["RatePresets"].contains(rulePreset))
+						warn(ruleId + ": Preset '" + rulePreset + "' does not exist in RatePresets.");
 
-					if (rule["Preset"].is_string())
-					{
-						const std::string rulePreset = rule["Preset"].get<std::string>();
-						if (!cfg["RatePresets"].contains(rulePreset))
-							warn(ruleId + ": Preset '" + rulePreset + "' does not exist in RatePresets.");
-					}
-					else
-					{
-						warn(ruleId + ": Preset is not a string.");
-					}
+					// Determine format and validate accordingly
+					const bool hasStartDay = rule.contains("StartDay");
+					const bool hasEndDay   = rule.contains("EndDay");
+					const bool hasDaysArr  = rule.contains("Days");
 
-					if (!rule["Days"].is_array())
+					if (hasStartDay || hasEndDay)
 					{
-						warn(ruleId + ": Days is not an array.");
-					}
-					else
-					{
-						for (const auto& day : rule["Days"])
+						// ---- NEW day-range format ----------------------------------------
+						if (!hasStartDay || !hasEndDay)
+							warn(ruleId + ": 'StartDay' and 'EndDay' must both be present.");
+						else
 						{
-							if (!day.is_string())
+							if (!rule["StartDay"].is_string() || !isValidDay(rule["StartDay"].get<std::string>()))
+								warn(ruleId + ": 'StartDay' is not a valid day name.");
+							if (!rule["EndDay"].is_string() || !isValidDay(rule["EndDay"].get<std::string>()))
+								warn(ruleId + ": 'EndDay' is not a valid day name.");
+						}
+
+						if (!rule.contains("StartHour") || !rule.contains("EndHour"))
+						{
+							warn(ruleId + ": day-range rule requires 'StartHour' and 'EndHour'.");
+						}
+						else if (!rule["StartHour"].is_number_integer() || !rule["EndHour"].is_number_integer())
+						{
+							warn(ruleId + ": 'StartHour' and 'EndHour' must be integers.");
+						}
+						else
+						{
+							const int sh = rule["StartHour"].get<int>();
+							const int eh = rule["EndHour"].get<int>();
+							if (sh < 0 || sh > 23)
+								warn(ruleId + ": StartHour " + std::to_string(sh) + " out of range [0,23].");
+							if (eh < 0 || eh > 23)
+								warn(ruleId + ": EndHour " + std::to_string(eh) + " out of range [0,23].");
+						}
+
+						if (hasDaysArr)
+							warn(ruleId + ": has both 'StartDay'/'EndDay' and 'Days' — 'Days' will be ignored (day-range format takes priority).");
+					}
+					else if (hasDaysArr)
+					{
+						// ---- OLD Days-array format -------------------------------------------
+						if (!rule["Days"].is_array())
+						{
+							warn(ruleId + ": 'Days' must be an array.");
+						}
+						else
+						{
+							for (const auto& day : rule["Days"])
 							{
-								warn(ruleId + ": Days contains a non-string entry.");
-							}
-							else
-							{
-								const std::string dayStr = day.get<std::string>();
-								bool found = false;
-								for (const auto& v : validDays) if (v == dayStr) { found = true; break; }
-								if (!found)
-									warn(ruleId + ": '" + dayStr + "' is not a valid day name.");
+								if (!day.is_string())
+									warn(ruleId + ": 'Days' contains a non-string entry.");
+								else if (!isValidDay(day.get<std::string>()))
+									warn(ruleId + ": '" + day.get<std::string>() + "' is not a valid day name.");
 							}
 						}
-					}
 
-					if (!rule["StartHour"].is_number_integer() || !rule["EndHour"].is_number_integer())
-					{
-						warn(ruleId + ": StartHour and EndHour must be integers.");
+						if (!rule.contains("StartHour") || !rule.contains("EndHour"))
+						{
+							warn(ruleId + ": missing 'StartHour' or 'EndHour'.");
+						}
+						else if (!rule["StartHour"].is_number_integer() || !rule["EndHour"].is_number_integer())
+						{
+							warn(ruleId + ": 'StartHour' and 'EndHour' must be integers.");
+						}
+						else
+						{
+							const int sh = rule["StartHour"].get<int>();
+							const int eh = rule["EndHour"].get<int>();
+							if (sh < 0 || sh > 23)
+								warn(ruleId + ": StartHour " + std::to_string(sh) + " out of range [0,23].");
+							if (eh < 0 || eh > 23)
+								warn(ruleId + ": EndHour " + std::to_string(eh) + " out of range [0,23].");
+							if (sh > eh)
+								warn(ruleId + ": StartHour > EndHour — overnight ranges are not supported in the Days-array format.");
+						}
 					}
 					else
 					{
-						const int sh = rule["StartHour"].get<int>();
-						const int eh = rule["EndHour"].get<int>();
-
-						if (sh < 0 || sh > 23)
-							warn(ruleId + ": StartHour " + std::to_string(sh) + " out of range [0,23].");
-						if (eh < 0 || eh > 23)
-							warn(ruleId + ": EndHour " + std::to_string(eh) + " out of range [0,23].");
-						if (sh > eh)
-							warn(ruleId + ": StartHour > EndHour — overnight ranges are not supported.");
+						warn(ruleId + ": must have either 'StartDay'+'EndDay' (day-range) or 'Days' (legacy) fields.");
 					}
 				}
 			}
@@ -212,13 +254,29 @@ void ValidateConfig()
 
 // ---------------------------------------------------------------------------
 // GetCurrentSchedulePreset
-//   Evaluates the Schedule rules against the current server clock and returns
+//   Evaluates Schedule rules against the current server clock and returns
 //   the name of the first matching preset, or an empty string if no rule
 //   matches (or if the Schedule is disabled / not configured).
 //
-//   Used by both CheckSchedule (Timers.h) and the timed-preset expiry
-//   callback so that when a timed preset ends the scheduler resumes control
-//   if a rule currently applies.
+//   Supports TWO rule formats — both can coexist in the same Rules array:
+//
+//   NEW — Day-range format (recommended):
+//     { "Preset":"weekend_rates", "StartDay":"Friday", "StartHour":16,
+//                                 "EndDay":"Sunday",   "EndHour":16 }
+//
+//     The range [StartDay:StartHour, EndDay:EndHour] is evaluated as a
+//     week-position: weekPos = dayIndex × 24 + hour (0=Sunday 0h … 167=Saturday 23h).
+//     If startPos ≤ endPos → normal range within the week.
+//     If startPos > endPos → range wraps over the Sunday boundary (e.g. Fri→Sun).
+//
+//   OLD — Days-array format (still fully supported):
+//     { "Preset":"normal_rates", "Days":["Mon","Tue"], "StartHour":0, "EndHour":17 }
+//
+//   Per-rule "Enabled" field (both formats):
+//     Set "Enabled": false on any rule to skip it without deleting it.
+//     Defaults to true when the field is absent.
+//
+//   Used by CheckSchedule (Timers.h) and the timed-preset expiry callback.
 // ---------------------------------------------------------------------------
 std::string GetCurrentSchedulePreset()
 {
@@ -242,31 +300,60 @@ std::string GetCurrentSchedulePreset()
 	localtime_r(&now, &localTime);
 #endif
 
-	const int currentHour = localTime.tm_hour; // 0-23
-	const int currentWDay = localTime.tm_wday; // 0=Sunday … 6=Saturday
+	const int currentHour    = localTime.tm_hour; // 0-23
+	const int currentWDay    = localTime.tm_wday; // 0=Sunday … 6=Saturday
+	const int currentWeekPos = currentWDay * 24 + currentHour; // 0-167
 
 	for (const auto& rule : schedule["Rules"])
 	{
-		if (!rule.contains("Preset") || !rule.contains("Days") ||
-			!rule.contains("StartHour") || !rule.contains("EndHour"))
-			continue;
+		// Skip rules that are explicitly disabled
+		if (!rule.value("Enabled", true)) continue;
 
-		const int startHour = rule.value("StartHour", 0);
-		const int endHour   = rule.value("EndHour",   23);
-
-		if (currentHour < startHour || currentHour > endHour) continue;
-
-		bool dayMatches = false;
-		for (const auto& dayEntry : rule["Days"])
-		{
-			if (!dayEntry.is_string()) continue;
-			auto it = s_dayMap.find(dayEntry.get<std::string>());
-			if (it != s_dayMap.end() && it->second == currentWDay) { dayMatches = true; break; }
-		}
-		if (!dayMatches) continue;
-
+		if (!rule.contains("Preset")) continue;
 		const std::string target = rule.value("Preset", "");
-		if (!target.empty()) return target;
+		if (target.empty()) continue;
+
+		bool matches = false;
+
+		if (rule.contains("StartDay") && rule.contains("EndDay"))
+		{
+			// ---- NEW day-range format ----------------------------------------
+			if (!rule.contains("StartHour") || !rule.contains("EndHour")) continue;
+
+			auto startIt = s_dayMap.find(rule.value("StartDay", ""));
+			auto endIt   = s_dayMap.find(rule.value("EndDay",   ""));
+			if (startIt == s_dayMap.end() || endIt == s_dayMap.end()) continue;
+
+			const int startPos = startIt->second * 24 + rule.value("StartHour", 0);
+			const int endPos   = endIt->second   * 24 + rule.value("EndHour",   23);
+
+			if (startPos <= endPos)
+				// Normal range within the week (e.g. Mon 8h → Fri 18h)
+				matches = (currentWeekPos >= startPos && currentWeekPos <= endPos);
+			else
+				// Wraps the Sunday boundary (e.g. Fri 16h → Sun 16h)
+				matches = (currentWeekPos >= startPos || currentWeekPos <= endPos);
+		}
+		else if (rule.contains("Days"))
+		{
+			// ---- OLD Days-array format (backward compatible) -----------------
+			if (!rule.contains("StartHour") || !rule.contains("EndHour")) continue;
+
+			const int startHour = rule.value("StartHour", 0);
+			const int endHour   = rule.value("EndHour",   23);
+
+			if (currentHour < startHour || currentHour > endHour) continue;
+
+			for (const auto& dayEntry : rule["Days"])
+			{
+				if (!dayEntry.is_string()) continue;
+				auto it = s_dayMap.find(dayEntry.get<std::string>());
+				if (it != s_dayMap.end() && it->second == currentWDay) { matches = true; break; }
+			}
+		}
+		// else: unknown format — skip silently
+
+		if (matches) return target;
 	}
 
 	return "";

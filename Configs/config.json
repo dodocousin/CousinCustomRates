@@ -56,15 +56,25 @@
     "Rules": [
       {
         "Preset": "weekend_rates",
-        "Days": ["Friday", "Saturday", "Sunday"],
-        "StartHour": 18,
-        "EndHour": 23
+        "StartDay": "Friday",
+        "StartHour": 16,
+        "EndDay": "Sunday",
+        "EndHour": 16
       },
       {
         "Preset": "normal_rates",
-        "Days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
-        "StartHour": 0,
-        "EndHour": 17
+        "StartDay": "Sunday",
+        "StartHour": 17,
+        "EndDay": "Friday",
+        "EndHour": 15
+      },
+      {
+        "Enabled": false,
+        "Preset": "event_rates",
+        "StartDay": "Saturday",
+        "StartHour": 12,
+        "EndDay": "Saturday",
+        "EndHour": 18
       }
     ]
   }
