@@ -1,6 +1,6 @@
 {
   "FullName": "CousinCustomRates",
   "Description": "Allow to changes rates while the server is running",
-  "Version": 1,
+  "Version": 1.1,
   "MinApiVersion": 1.18
 }
