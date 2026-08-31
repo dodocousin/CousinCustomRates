@@ -8,17 +8,16 @@
 // ---------------------------------------------------------------------------
 // AShooterGameMode::InitGame hook
 //
-// PURPOSE: Re-apply the last-active rate preset on every server (re)start,
-//          making the rate change persistent across restarts.
+// PURPOSE: Load the last-active rate preset on every server (re)start and
+//          queue it for restoration from BeginPlay.
 //
 // TIMING:  InitGame fires BEFORE BeginPlay. Because of this, the hook must
 //          be registered inside Plugin_Init() — not in OnServerReady() —
 //          to guarantee it is active when InitGame fires during startup.
 //
-// SAFETY:  We always call the original function first so the server
-//          completes its own initialization before we touch any fields.
-//          We also call ReadConfig() here because config.json may not have
-//          been loaded yet (OnServerReady / BeginPlay comes after InitGame).
+// SAFETY:  AShooterGameState is not guaranteed to exist during InitGame, even
+//          after the original function returns. We therefore load state here
+//          but defer changing/replicating multipliers until BeginPlay.
 // ---------------------------------------------------------------------------
 
 DECLARE_HOOK(
@@ -54,21 +53,46 @@ DECLARE_HOOK(
 		return;
 	}
 
-	Log::GetLog()->info("InitGame hook: re-applying saved preset '{}'.", savedPreset);
+	CousinCustomRates::pendingStartupPreset = savedPreset;
+	CousinCustomRates::startupRestorePending = true;
+	Log::GetLog()->info(
+		"InitGame hook: saved preset '{}' queued for BeginPlay restore.", savedPreset);
+}
 
-	// 4. Apply the multipliers into the freshly initialised GameMode (_this).
-	//    Pass sendNotifications=false  — silent restore, not a rate change.
-	//    Pass fromTimedExpiry=true     — we handle timed state manually below
-	//                                    so ApplyRates must not overwrite it.
-	if (!ApplyRates(FString(savedPreset.c_str()), false, true))
+// ---------------------------------------------------------------------------
+// RestoreQueuedStartupPreset
+//   Runs after AShooterGameMode::BeginPlay. At this point the GameState field
+//   is expected to be available, so replicated EggHatch changes can be safely
+//   applied. Timed preset state is handled only after the initial restoration
+//   has succeeded.
+// ---------------------------------------------------------------------------
+void RestoreQueuedStartupPreset(AShooterGameMode* gameMode)
+{
+	if (!CousinCustomRates::startupRestorePending)
+		return;
+
+	const std::string savedPreset = CousinCustomRates::pendingStartupPreset;
+	if (savedPreset.empty())
 	{
-		Log::GetLog()->error("InitGame hook: failed to apply saved preset '{}'.", savedPreset);
+		CousinCustomRates::startupRestorePending = false;
+		return;
 	}
 
-	// 5. Handle persisted timed preset state.
-	//    LoadState() already populated timedPresetExpiry and timedFallbackPreset
-	//    from status.json.  Decide what to do based on whether the timer has
-	//    already expired during the server downtime.
+	Log::GetLog()->info("BeginPlay hook: restoring saved preset '{}'.", savedPreset);
+
+	// Silent restore. fromTimedExpiry prevents ApplyRates from overwriting the
+	// persisted timed state before the logic below resumes or expires it.
+	if (!ApplyRates(FString(savedPreset.c_str()), false, true, gameMode))
+	{
+		Log::GetLog()->error("BeginPlay hook: failed to restore saved preset '{}'.", savedPreset);
+		return;
+	}
+
+	CousinCustomRates::startupRestorePending = false;
+	CousinCustomRates::pendingStartupPreset.clear();
+
+	// LoadState() in InitGame populated timedPresetExpiry and timedFallbackPreset.
+	// Decide whether to apply a downtime-expired fallback or re-arm the timer.
 	if (CousinCustomRates::timedPresetExpiry > 0)
 	{
 		const int64_t now       = static_cast<int64_t>(std::time(nullptr));
@@ -78,7 +102,7 @@ DECLARE_HOOK(
 		{
 			// Timer expired while the server was down — apply the fallback now.
 			Log::GetLog()->info(
-				"InitGame hook: timed preset expired during downtime — applying fallback.");
+				"BeginPlay hook: timed preset expired during downtime — applying fallback.");
 
 			CousinCustomRates::timedPresetExpiry = 0;
 
@@ -92,12 +116,12 @@ DECLARE_HOOK(
 			{
 				// sendNotifications=true  — real expiry, players should be notified
 				// fromTimedExpiry=true    — don't re-arm a timer for the fallback
-				ApplyRates(FString(target.c_str()), true, true);
+				ApplyRates(FString(target.c_str()), true, true, gameMode);
 			}
 			else
 			{
 				Log::GetLog()->warn(
-					"InitGame hook: timed preset expired but no fallback found — "
+					"BeginPlay hook: timed preset expired but no fallback found — "
 					"rates unchanged.");
 			}
 		}
@@ -105,7 +129,7 @@ DECLARE_HOOK(
 		{
 			// Timer still valid — re-arm with the remaining seconds.
 			Log::GetLog()->info(
-				"InitGame hook: timed preset still active, re-arming with {}s remaining.",
+				"BeginPlay hook: timed preset still active, re-arming with {}s remaining.",
 				remaining);
 
 			ArmTimedPresetExpiry(remaining);

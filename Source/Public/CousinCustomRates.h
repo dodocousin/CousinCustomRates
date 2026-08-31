@@ -13,6 +13,11 @@ namespace CousinCustomRates
 	// Name of the currently active rate preset (e.g. "weekend_rates")
 	inline std::string lastPreset;
 
+	// Preset loaded during InitGame and deferred until BeginPlay, when the
+	// AShooterGameState required for replication is available.
+	inline std::string pendingStartupPreset;
+	inline bool startupRestorePending = false;
+
 	// HTTP request helper (used for Discord webhook)
 	static API::Requests& req = API::Requests::Get();
 

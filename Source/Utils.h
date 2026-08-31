@@ -13,7 +13,8 @@
 // ---------------------------------------------------------------------------
 bool ApplyRates(const FString& presetName,
                 bool sendNotifications = true,
-                bool fromTimedExpiry   = false);
+                bool fromTimedExpiry   = false,
+                AShooterGameMode* gameModeOverride = nullptr);
 
 // ---------------------------------------------------------------------------
 // ValidateConfig
@@ -679,7 +680,8 @@ void BroadcastRateChange(const std::string& message)
 //   Returns true on success, false if the preset was not found or if the
 //   GameMode / GameState pointer is not yet available.
 // ---------------------------------------------------------------------------
-bool ApplyRates(const FString& presetName, bool sendNotifications, bool fromTimedExpiry)
+bool ApplyRates(const FString& presetName, bool sendNotifications, bool fromTimedExpiry,
+	AShooterGameMode* gameModeOverride)
 {
 	const std::string presetKey = presetName.ToString();
 
@@ -691,21 +693,33 @@ bool ApplyRates(const FString& presetName, bool sendNotifications, bool fromTime
 		return false;
 	}
 
-	// Get live GameMode pointer
-	AShooterGameMode* gameMode = AsaApi::GetApiUtils().GetShooterGameMode();
+	// Commands and timers resolve the live GameMode through AsaApi. Startup
+	// restoration passes the BeginPlay hook's known-valid instance directly.
+	AShooterGameMode* gameMode = gameModeOverride
+		? gameModeOverride
+		: AsaApi::GetApiUtils().GetShooterGameMode();
 	if (!gameMode)
 	{
 		Log::GetLog()->error("ApplyRates: AShooterGameMode is null — server not ready yet.");
 		return false;
 	}
 
-	// Get live GameState pointer
-	AShooterGameState* gameState = AsaApi::GetApiUtils().GetGameState();
-	if (!gameState)
+	// Get the GameState from the GameMode's generated field. GetGameState() is
+	// not part of the official ASA ApiUtils interface.
+	AGameStateBase* gameStateBase = gameMode->GameStateField().Get();
+	if (!gameStateBase)
 	{
-		Log::GetLog()->error("ApplyRates: AShooterGameState is null.");
+		Log::GetLog()->error("ApplyRates: GameMode.GameState is null.");
 		return false;
 	}
+
+	if (!gameStateBase->IsA(AShooterGameState::StaticClass()))
+	{
+		Log::GetLog()->error("ApplyRates: GameMode.GameState is not an AShooterGameState.");
+		return false;
+	}
+
+	AShooterGameState* gameState = static_cast<AShooterGameState*>(gameStateBase);
 
 	const nlohmann::json& preset = CousinCustomRates::config["RatePresets"][presetKey];
 

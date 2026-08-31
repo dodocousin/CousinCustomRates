@@ -7,7 +7,7 @@
 // Must be included before Hooks.h, Timers.h, and Commands.h (they call functions defined here)
 #include "Utils.h"
 
-// AShooterGameMode::InitGame hook — re-applies last preset on every restart
+// AShooterGameMode::InitGame hook — loads and queues the last preset on restart
 // NOTE: SetHooks() is called in Plugin_Init() so the hook is registered BEFORE
 //       InitGame fires. InitGame always runs before BeginPlay, so registering
 //       the hook from OnServerReady() (BeginPlay) would be too late.
@@ -31,8 +31,8 @@
 //   Called once the game world is fully up (triggered by the BeginPlay hook,
 //   or immediately if the plugin is loaded after the server is already ready).
 //
-//   By the time this runs, InitGame has already fired and persistent rates
-//   have been re-applied (if a saved preset existed in status.json).
+//   By the time this runs, BeginPlay has restored persistent rates if a saved
+//   preset existed in status.json.
 //   This function registers the RCON commands, starts the optional schedule
 //   timer, and does a fresh config reload (picks up any edits made between
 //   restarts).
@@ -71,14 +71,15 @@ void OnServerReady()
 // ---------------------------------------------------------------------------
 // BeginPlay hook
 //   Ensures OnServerReady() runs after the game world has started.
-//   BeginPlay fires after InitGame, so by the time we reach here the
-//   InitGame hook has already re-applied the persistent rates (if any).
+//   BeginPlay fires after InitGame, so this is where a preset queued by the
+//   InitGame hook can be restored once GameState replication is available.
 // ---------------------------------------------------------------------------
 DECLARE_HOOK(AShooterGameMode_BeginPlay, void, AShooterGameMode*);
 
 void Hook_AShooterGameMode_BeginPlay(AShooterGameMode* _this)
 {
 	AShooterGameMode_BeginPlay_original(_this);
+	RestoreQueuedStartupPreset(_this);
 	OnServerReady();
 }
 
