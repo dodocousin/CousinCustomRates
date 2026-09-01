@@ -4,6 +4,9 @@
   //
   // RCON / in-game console commands:
   //   changerates <preset_name>      — activate a preset immediately
+  //   changePlayerRate <preset_name> <eosid>
+  //                                  — apply ONLY the preset's HarvestAmountMultiplier
+  //                                    to the target player's entire tribe
   //   CousinCustomRates.Reload       — hot-reload this file without restart
   // ===========================================================================
 
@@ -19,6 +22,12 @@
 
       // Message broadcast in-game to ALL players when this preset activates.
       // Leave as "" to skip the broadcast entirely.
+      //
+      // TARGETED TRIBE HARVEST NOTE:
+      // When this preset is used with changePlayerRate, this same message is
+      // sent as normal chat ONLY to the exact EOS-ID player named in the
+      // command. It is not broadcast server-wide and no Discord webhook is
+      // sent for a targeted tribe boost.
       "BroadcastMessage": "Weekend rates are now ACTIVE! Enjoy the boosted rates!",
 
       // Full Discord webhook URL for this preset's notification.
@@ -97,6 +106,14 @@
     //
     // NOTE: The "Duration" field is silently ignored when TimedPresets.Enabled
     //       is false — no errors are logged.
+    //
+    // TARGETED TRIBE HARVEST INTERACTION:
+    // The same Duration is used by:
+    //   changePlayerRate <preset_name> <eosid>
+    // When it expires, ONLY that tribe's harvest exception is removed. The
+    // tribe automatically returns to whichever global server preset is active
+    // at that moment. No global rate is changed, no server-wide message is
+    // sent, and no Discord webhook is posted.
     // -------------------------------------------------------------------------
     "event_rates": {
 
@@ -133,6 +150,67 @@
   "TimedPresets": {
     "Enabled": true
   },
+
+  // ===========================================================================
+  // ChatSenderName (OPTIONAL)
+  //
+  // Sender name shown in the normal private chat messages sent by
+  // changePlayerRate, including the activation BroadcastMessage and the timed
+  // tribe boost expiry message. If omitted or empty, "CousinCustomRates" is
+  // used. This does not change global notifications or Discord messages.
+  // ===========================================================================
+  "ChatSenderName": "CousinCustomRates",
+
+  // ===========================================================================
+  // TribeSizeMultiplier (OPTIONAL)
+  //
+  // Applies an additional harvest multiplier based on the TOTAL number of
+  // members in the tribe, including offline members. This is not the online
+  // player count. The entry applies only when the tribe size is an EXACT match.
+  // An unlisted tribe size keeps its normal/global or changePlayerRate harvest
+  // rate with no additional modifier (1.0x).
+  //
+  // The modifier applies to normal player harvests, ridden dino harvests, and
+  // known unmounted tribe tames. For an unmounted tame, the server learns and
+  // saves a tribe's size after at least one member has connected to that map.
+  // Until then, that tame safely receives no size modifier.
+  //
+  // EXAMPLE WITH GLOBAL 2x HARVEST:
+  //   TribeSize 1, Multiplier 4.0  -> 8x final harvest.
+  //   TribeSize 6, Multiplier 0.5  -> 1x final harvest.
+  //
+  // EXAMPLE WITH changePlayerRate TARGET 20x AND TRIBE SIZE 1 AT 4.0:
+  //   Final targeted harvest rate -> 80x.
+  // ===========================================================================
+  "TribeSizeMultiplier": {
+    "Enabled": false,
+    "Multipliers": [
+      { "TribeSize": 1, "Multiplier": 4.0 },
+      { "TribeSize": 2, "Multiplier": 3.0 },
+      { "TribeSize": 3, "Multiplier": 2.0 },
+      { "TribeSize": 6, "Multiplier": 0.5 }
+    ]
+  },
+
+  // ===========================================================================
+  // TribeHarvestBoostDebug (OPTIONAL)
+  //
+  // Set true only while diagnosing changePlayerRate harvest results. For each
+  // targeted harvest, the server log shows the tribe team, active global rate,
+  // target rate, correction factor, and original versus adjusted item amount.
+  // Set false again after testing to avoid extra harvest log entries.
+  // ===========================================================================
+  "TribeHarvestBoostDebug": false,
+
+  // ===========================================================================
+  // TribeHarvestBoostExpiredMessage (OPTIONAL)
+  //
+  // Normal server chat sent ONLY to the original EOS-ID player when their
+  // timed changePlayerRate tribe harvest boost expires. It is not broadcast
+  // server-wide and does not post to Discord. Leave it empty to send no expiry
+  // chat message. If omitted, the plugin uses its built-in English message.
+  // ===========================================================================
+  "TribeHarvestBoostExpiredMessage": "Your tribe harvest-rate boost has expired. Your tribe is now using the current server harvest rates.",
 
   // ===========================================================================
   // Schedule (OPTIONAL)

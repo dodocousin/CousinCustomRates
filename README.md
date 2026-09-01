@@ -11,13 +11,14 @@ Rates can be changed instantly via RCON or the in-game admin console, switched a
 | Feature | Description |
 |---|---|
 | **Rate presets** | Define unlimited named presets in `config.json`, each with its own multiplier values |
-| **RCON & console commands** | Switch any preset instantly with `changerates <preset_name>` — works via RCON **and** the in-game admin console |
+| **RCON & console commands** | Switch global presets with `changerates <preset_name>` or give one tribe a harvest-only preset with `changePlayerRate <preset_name> <eosid>` |
 | **Hot config reload** | Edit `config.json` and apply changes without restarting with `CousinCustomRates.Reload` |
 | **Persistent state** | The active preset is saved to `status.json` and automatically re-applied on every server restart |
 | **In-game broadcast** | Sends a server-wide message to all players when rates change (optional per preset) |
 | **Discord webhook** | Posts a notification to a Discord channel **only when rates are actively changed** — not on server restart (optional per preset) |
 | **Discord rich embed** | Each preset can define a formatted embed with title, color, and description (falls back to plain text if not configured) |
 | **Timed presets** | Any preset can have a `Duration` (in minutes) that causes it to automatically revert after the countdown expires |
+| **Targeted tribe harvest boosts** | Apply a preset's harvest rate to one online player's tribe without changing server-wide rates; timed boosts automatically fall back to the current global rate |
 | **Automatic scheduler** | Optional day/hour schedule that switches presets automatically without any admin input |
 | **Config validation** | Every config load/reload validates the JSON structure and logs actionable warnings for any issues found |
 
@@ -47,14 +48,143 @@ All commands work both via **RCON** and the **in-game admin console** (Tab key).
 |---|---|
 | `changerates <preset_name>` | Activate a named preset immediately |
 | `changerates` *(no argument)* | Lists all available preset names |
+| `changePlayerRate <preset_name> <eosid>` | Apply the preset's harvest rate to the online target player's tribe only |
 | `CousinCustomRates.Reload` | Hot-reload `config.json` without restarting |
 
 **Examples:**
 ```
 changerates weekend_rates
 changerates event_rates
+changePlayerRate event_rates 00000000000000000000000000000000
 CousinCustomRates.Reload
 ```
+
+### Targeted tribe harvest boosts
+
+`changePlayerRate` uses the supplied **EOS ID** to locate an online player,
+then assigns the selected preset to that player's ARK tribe/team. It changes
+only harvesting for that tribe; it does not modify the global server rate,
+other tribes, or the other multiplier fields in the preset.
+
+```text
+changePlayerRate <preset_name> <eosid>
+```
+
+Example:
+
+```text
+changePlayerRate event_rates 00000000000000000000000000000000
+```
+
+The target must be online and in a tribe. The EOS ID is used only to select
+the tribe and to deliver private messages. The boost itself is stored by the
+ARK tribe/team ID, so it applies to that tribe's members and tribe-owned dinos.
+
+#### Harvest-rate behavior
+
+The targeted preset's `HarvestAmountMultiplier` is an **absolute target rate**,
+not an additional multiplier. For example, if the active global rate is `10x`
+and the targeted preset has `HarvestAmountMultiplier: 50.0`, the boosted tribe
+harvests at `50x`, not `500x`.
+
+The implementation marks ARK's harvest-resource grant path, then adjusts only
+the matching item-quantity grant to that harvest's destination inventory. It
+does not boost crafting, loot transfers, item pickups, admin item grants, or
+ordinary inventory operations.
+
+#### Harvest troubleshooting
+
+If a targeted boost does not produce the expected item amount, temporarily add
+or set this top-level option in `config.json`:
+
+```json
+"TribeHarvestBoostDebug": true
+```
+
+Run `CousinCustomRates.Reload`, apply the targeted boost again, and harvest a
+resource while it is active. The server log will include `TribeHarvestDebug`
+entries showing the team ID, active global multiplier, targeted multiplier,
+correction factor, original item quantity, and adjusted quantity. Set the
+option back to `false` once testing is complete.
+
+#### Duration and expiry
+
+When `TimedPresets.Enabled` is `true`, a targeted boost reuses the selected
+preset's optional `Duration` in minutes. At expiry, the tribe-only exception
+is removed and that tribe immediately returns to the **currently active global
+server harvest rate**. The expiry never changes the global preset or scheduler.
+
+Reapplying `changePlayerRate` to the same tribe replaces the prior targeted
+preset and resets its duration. A preset without `Duration`, or with
+`TimedPresets.Enabled: false`, creates a permanent targeted boost.
+
+Targeted boosts are persisted in `status.json`. A still-valid timed boost is
+restored after restart; one that expired while the server was offline is simply
+discarded.
+
+The optional top-level `TribeHarvestBoostExpiredMessage` controls the private
+normal-chat message sent to the original EOS-ID target when a timed tribe boost
+expires:
+
+```json
+"TribeHarvestBoostExpiredMessage": "Your tribe harvest-rate boost has expired. Your tribe is now using the current server harvest rates."
+```
+
+Set it to `""` to suppress the expiry chat. If omitted, the built-in English
+message is used. The message is never broadcast server-wide and never sent to
+Discord.
+
+The optional top-level `ChatSenderName` controls the sender label for both
+private targeted tribe-boost chat messages: activation and expiry.
+
+```json
+"ChatSenderName": "CousinCustomRates"
+```
+
+For example, set it to `"Multiplicateurs"` to display that name in chat. If it
+is omitted or empty, the plugin uses `CousinCustomRates`. This setting does not
+change global notifications or Discord messages.
+
+### Tribe-size harvest balancing
+
+The optional top-level `TribeSizeMultiplier` applies an additional harvest
+modifier based on the tribe's **total membership**, including offline members.
+It does not use the online player count. A rule applies only to an exact tribe
+size; any size not listed receives no extra modifier (`1.0x`).
+
+```json
+"TribeSizeMultiplier": {
+  "Enabled": true,
+  "Multipliers": [
+    { "TribeSize": 1, "Multiplier": 4.0 },
+    { "TribeSize": 2, "Multiplier": 3.0 },
+    { "TribeSize": 3, "Multiplier": 2.0 },
+    { "TribeSize": 6, "Multiplier": 0.5 }
+  ]
+}
+```
+
+With a global harvest rate of `2x`, the example gives a one-member tribe `8x`
+final harvest and a six-member tribe `1x` final harvest. A tribe with four or
+five members is not listed, so it remains at `2x`.
+
+The modifier also combines with `changePlayerRate`. For example, a targeted
+tribe rate of `20x` and a one-member size modifier of `4x` produces `80x` final
+harvest for that tribe.
+
+Player and ridden-dino harvests read the total member count directly from the
+server's tribe data. For unmounted tames, the plugin uses a local cached count
+that is refreshed whenever a tribe member is online and saved across restart.
+If no member of that tribe has connected to the map since the cache was created,
+the unmounted tame safely receives no size modifier until the count becomes
+known.
+
+#### Targeted messages and Discord
+
+For `changePlayerRate`, the preset's `BroadcastMessage` is sent as a normal
+server chat message **only** to the EOS-ID player in the command. It is not
+broadcast to the server. Targeted boosts do not post to the preset's
+`Discord_Webhook`; global `changerates` behavior remains unchanged.
 
 ---
 
@@ -65,7 +195,11 @@ The configuration file is located at:
 ArkApi/Plugins/CousinCustomRates/config.json
 ```
 
-The file has three top-level sections: **`RatePresets`**, **`TimedPresets`**, and **`Schedule`**.
+The file has three main sections: **`RatePresets`**, **`TimedPresets`**, and
+**`Schedule`**. It also has optional top-level targeted tribe-harvest settings:
+`TribeHarvestBoostDebug`, `TribeHarvestBoostExpiredMessage`, and
+`TribeSizeMultiplier`. `ChatSenderName` is also available for targeted
+tribe-boost private chat.
 
 ---
 
@@ -92,7 +226,7 @@ Each preset is identified by its **JSON key** (e.g. `"weekend_rates"`). This is 
 | `BabyMatureSpeedMultiplier` | `float` | ✅ | Baby maturation speed multiplier |
 | `EggHatchSpeedMultiplier` | `float` | ✅ | Egg hatch speed multiplier |
 | `Duration` | `integer` | ❌ | **Minutes** before the preset automatically reverts. Requires `TimedPresets.Enabled = true`. Omit for a permanent preset. |
-| `BroadcastMessage` | `string` | ❌ | In-game message sent to all players when this preset activates. Leave as `""` to skip. |
+| `BroadcastMessage` | `string` | ❌ | Global `changerates`: message sent to all players. `changePlayerRate`: normal chat sent only to the command target's EOS ID. Leave as `""` to skip. |
 | `Discord_Webhook` | `string` | ❌ | Full Discord webhook URL. Leave as `""` to skip Discord entirely — no errors occur. |
 | `Discord_Embed` | `object` | ❌ | Rich embed config for Discord (see below). If absent, a plain text message is sent instead. |
 

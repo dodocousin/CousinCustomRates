@@ -4,6 +4,7 @@
 #include <string>
 #include <ctime>          // std::time, std::tm, localtime_s / localtime_r
 #include <unordered_map>  // GetCurrentSchedulePreset day map
+#include <unordered_set>  // ValidateConfig duplicate tribe-size entries
 
 // ---------------------------------------------------------------------------
 // Forward declaration
@@ -103,6 +104,59 @@ void ValidateConfig()
 			warn("'TimedPresets' is not a JSON object.");
 		else if (tp.contains("Enabled") && !tp["Enabled"].is_boolean())
 			warn("TimedPresets.Enabled is not a boolean.");
+	}
+
+	// ---- 3b. Tribe-size harvest multipliers -----------------------------
+	if (cfg.contains("TribeSizeMultiplier"))
+	{
+		const nlohmann::json& sizeSettings = cfg["TribeSizeMultiplier"];
+		if (!sizeSettings.is_object())
+		{
+			warn("'TribeSizeMultiplier' is not a JSON object.");
+		}
+		else
+		{
+			if (sizeSettings.contains("Enabled") && !sizeSettings["Enabled"].is_boolean())
+				warn("TribeSizeMultiplier.Enabled is not a boolean.");
+
+			if (sizeSettings.contains("Multipliers"))
+			{
+				if (!sizeSettings["Multipliers"].is_array())
+				{
+					warn("TribeSizeMultiplier.Multipliers is not an array.");
+				}
+				else
+				{
+					std::unordered_set<int> configuredSizes;
+					for (const auto& entry : sizeSettings["Multipliers"])
+					{
+						if (!entry.is_object())
+						{
+							warn("TribeSizeMultiplier.Multipliers contains a non-object entry.");
+							continue;
+						}
+
+						if (!entry.contains("TribeSize") || !entry["TribeSize"].is_number_integer() ||
+							entry["TribeSize"].get<int>() <= 0)
+						{
+							warn("TribeSizeMultiplier entry has a missing or invalid positive integer TribeSize.");
+							continue;
+						}
+
+						const int tribeSize = entry["TribeSize"].get<int>();
+						if (!configuredSizes.insert(tribeSize).second)
+							warn("TribeSizeMultiplier has duplicate TribeSize " + std::to_string(tribeSize) + " — first matching entry is used.");
+
+						if (!entry.contains("Multiplier") || !entry["Multiplier"].is_number() ||
+							entry["Multiplier"].get<float>() <= 0.0f)
+						{
+							warn("TribeSizeMultiplier entry for TribeSize " + std::to_string(tribeSize) +
+								" has a missing or invalid positive Multiplier.");
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// ---- 4. Schedule block validation ----------------------------------
@@ -475,11 +529,37 @@ void SaveState(const std::string& presetName)
 		nlohmann::json stateJson;
 		stateJson["active_preset"] = presetName;
 
-		// Persist timed preset info only when a countdown is active
+		// Persist timed global-preset info only when a countdown is active.
 		if (CousinCustomRates::timedPresetExpiry > 0)
 		{
 			stateJson["timed_expiry"]   = CousinCustomRates::timedPresetExpiry;
 			stateJson["timed_fallback"] = CousinCustomRates::timedFallbackPreset;
+		}
+
+		// Persist every tribe harvest exception in the same document. This is
+		// deliberately independent from the one global timed-preset state.
+		stateJson["tribe_harvest_boosts"] = nlohmann::json::array();
+		for (const auto& [teamId, boost] : CousinCustomRates::tribeHarvestBoosts)
+		{
+			stateJson["tribe_harvest_boosts"].push_back({
+				{"team_id", teamId},
+				{"preset", boost.presetName},
+				{"harvest_multiplier", boost.harvestMultiplier},
+				{"expiry", boost.expiryUnixTime},
+				{"notification_eos_id", boost.notificationEosId}
+			});
+		}
+
+		stateJson["tribe_member_counts"] = nlohmann::json::array();
+		for (const auto& [teamId, memberCount] : CousinCustomRates::tribeMemberCountsByTeam)
+		{
+			if (teamId != 0 && memberCount > 0)
+			{
+				stateJson["tribe_member_counts"].push_back({
+					{"team_id", teamId},
+					{"member_count", memberCount}
+				});
+			}
 		}
 
 		std::ofstream file{ path };
@@ -519,9 +599,44 @@ std::string LoadState()
 		nlohmann::json stateJson;
 		file >> stateJson;
 
-		// Restore timed preset state into globals (may be 0 / empty if not saved)
+		// Restore timed preset state into globals (may be 0 / empty if not saved).
 		CousinCustomRates::timedPresetExpiry   = stateJson.value("timed_expiry",   static_cast<int64_t>(0));
 		CousinCustomRates::timedFallbackPreset = stateJson.value("timed_fallback", std::string(""));
+
+		// Restore valid, non-expired tribe harvest boosts. A boost that expired
+		// while the server was offline simply falls back to current global rates.
+		CousinCustomRates::tribeHarvestBoosts.clear();
+		const int64_t now = static_cast<int64_t>(std::time(nullptr));
+		if (stateJson.contains("tribe_harvest_boosts") && stateJson["tribe_harvest_boosts"].is_array())
+		{
+			for (const auto& entry : stateJson["tribe_harvest_boosts"])
+			{
+				if (!entry.is_object()) continue;
+				const int teamId = entry.value("team_id", 0);
+				const std::string preset = entry.value("preset", "");
+				const float multiplier = entry.value("harvest_multiplier", 0.0f);
+				const int64_t expiry = entry.value("expiry", static_cast<int64_t>(0));
+				if (teamId == 0 || preset.empty() || multiplier <= 0.0f || (expiry > 0 && expiry <= now))
+					continue;
+
+				CousinCustomRates::tribeHarvestBoosts[teamId] = {
+					preset, multiplier, expiry, entry.value("notification_eos_id", "")
+				};
+			}
+		}
+
+		CousinCustomRates::tribeMemberCountsByTeam.clear();
+		if (stateJson.contains("tribe_member_counts") && stateJson["tribe_member_counts"].is_array())
+		{
+			for (const auto& entry : stateJson["tribe_member_counts"])
+			{
+				if (!entry.is_object()) continue;
+				const int teamId = entry.value("team_id", 0);
+				const int memberCount = entry.value("member_count", 0);
+				if (teamId != 0 && memberCount > 0)
+					CousinCustomRates::tribeMemberCountsByTeam[teamId] = memberCount;
+			}
+		}
 
 		return stateJson.value("active_preset", "");
 	}

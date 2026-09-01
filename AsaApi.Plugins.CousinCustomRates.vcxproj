@@ -21,6 +21,7 @@
     <ClInclude Include="Source\Public\CousinCustomRates.h" />
     <ClInclude Include="Source\Reload.h" />
     <ClInclude Include="Source\Timers.h" />
+    <ClInclude Include="Source\TargetedRates.h" />
     <ClInclude Include="Source\Utils.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">

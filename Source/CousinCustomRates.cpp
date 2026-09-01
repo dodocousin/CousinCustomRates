@@ -7,6 +7,9 @@
 // Must be included before Hooks.h, Timers.h, and Commands.h (they call functions defined here)
 #include "Utils.h"
 
+// Tribe-only harvest boosts and the verified harvest-resource hook.
+#include "TargetedRates.h"
+
 // AShooterGameMode::InitGame hook — loads and queues the last preset on restart
 // NOTE: SetHooks() is called in Plugin_Init() so the hook is registered BEFORE
 //       InitGame fires. InitGame always runs before BeginPlay, so registering
@@ -62,6 +65,8 @@ void OnServerReady()
 
 	AddOrRemoveCommands();
 	AddReloadCommands();
+	AddOrRemovePlayerRateCommands();
+	AddOrRemoveTribeHarvestBoostTimer();
 	SetTimers(); // starts the schedule timer only if Schedule.Enabled == true
 
 	Log::GetLog()->info("CousinCustomRates initialised successfully.");
@@ -96,6 +101,7 @@ extern "C" __declspec(dllexport) void Plugin_Init()
 	// Failing to do this here would mean the hook misses the first InitGame
 	// call and rates would NOT be restored after a restart.
 	SetHooks();
+	SetTribeHarvestBoostHooks();
 
 	// Register the BeginPlay hook to trigger our post-world-ready setup.
 	AsaApi::GetHooks().SetHook(
@@ -120,13 +126,16 @@ extern "C" __declspec(dllexport) void Plugin_Unload()
 
 	// Remove the InitGame hook
 	SetHooks(false);
+	SetTribeHarvestBoostHooks(false);
 
 	// Stop the schedule timer (safe even if it was never started)
 	SetTimers(false);
+	AddOrRemoveTribeHarvestBoostTimer(false);
 
 	// Remove RCON commands
 	AddOrRemoveCommands(false);
 	AddReloadCommands(false);
+	AddOrRemovePlayerRateCommands(false);
 
 	Log::GetLog()->info("CousinCustomRates unloaded.");
 }

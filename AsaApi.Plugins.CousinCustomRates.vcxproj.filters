@@ -41,6 +41,9 @@
     <ClInclude Include="Source\Public\CousinCustomRates.h">
       <Filter>Header Files\Public</Filter>
     </ClInclude>
+    <ClInclude Include="Source\TargetedRates.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Reload.h">
       <Filter>Header Files</Filter>
     </ClInclude>
