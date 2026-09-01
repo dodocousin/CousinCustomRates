@@ -5,6 +5,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <API/ARK/Ark.h>
+#include <API/ARK/GameMode.h>
 
 // ---------------------------------------------------------------------------
 // Targeted tribe harvest boosts
@@ -122,8 +124,10 @@ float GetTribeSizeHarvestMultiplier(const int tribeMemberCount)
     return 1.0f;
 }
 
-// Reads tribe member count from lazy-loaded MyTribeDataField.
-// Uses safe retry logic - returns 0 if not loaded yet, timer will retry.
+// Reads tribe member count using hybrid approach:
+// 1. Scans server's active TribesDataField cache (instant, safe)
+// 2. Falls back to lazy-loaded MyTribeDataField if not in cache
+// 3. Returns 1 as safe default if neither method succeeds
 // Solo players (not in a tribe) return 1.
 int GetAndCacheTribeMemberCount(AShooterPlayerController* player, bool* cacheChanged = nullptr)
 {
@@ -141,35 +145,85 @@ int GetAndCacheTribeMemberCount(AShooterPlayerController* player, bool* cacheCha
 
     auto* playerState = static_cast<AShooterPlayerState*>(playerStateBase);
     
-    // Check if player is actually in a tribe first
+    // Solo players count as tribe of 1
     if (!playerState->IsInTribe())
     {
-        return 1; // Solo player counts as tribe of 1
+        return 1;
     }
 
-    // Read from the fully constructed, engine-allocated player state data
-    const int memberCount = playerState->MyTribeDataField().MembersPlayerDataIDSet_ServerField().Num();
+    const int teamId = player->TargetingTeamField();
+    if (teamId == 0)
+        return 0;
 
-    if (memberCount > 0)
+    // METHOD 1: Scan server's active tribe cache (instant, no allocation)
+    try
     {
-        const int teamId = player->TargetingTeamField();
-        const auto cachedCount = CousinCustomRates::tribeMemberCountsByTeam.find(teamId);
-        if (cachedCount == CousinCustomRates::tribeMemberCountsByTeam.end() || 
-            cachedCount->second != memberCount)
+        AShooterGameMode* gameMode = AsaApi::GetApiUtils().GetShooterGameMode();
+        if (gameMode)
         {
-            CousinCustomRates::tribeMemberCountsByTeam[teamId] = memberCount;
-            if (cacheChanged)
-                *cacheChanged = true;
+            TArray<FTribeData, TSizedDefaultAllocator<32>>& activeTribes = gameMode->TribesDataField();
             
-            Log::GetLog()->info("GetAndCacheTribeMemberCount: Cached tribe member count for teamId={}, count={}", 
-                teamId, memberCount);
+            for (int i = 0; i < activeTribes.Num(); ++i)
+            {
+                FTribeData& tribe = activeTribes[i];
+                if (tribe.TribeIDField() == teamId)
+                {
+                    const int memberCount = tribe.MembersPlayerDataIDField().Num();
+                    if (memberCount > 0)
+                    {
+                        const auto cachedCount = CousinCustomRates::tribeMemberCountsByTeam.find(teamId);
+                        if (cachedCount == CousinCustomRates::tribeMemberCountsByTeam.end() || 
+                            cachedCount->second != memberCount)
+                        {
+                            CousinCustomRates::tribeMemberCountsByTeam[teamId] = memberCount;
+                            if (cacheChanged)
+                                *cacheChanged = true;
+                            
+                            Log::GetLog()->info("GetAndCacheTribeMemberCount: SUCCESS (TribesDataField cache) - teamId={}, count={}", 
+                                teamId, memberCount);
+                        }
+                        return memberCount;
+                    }
+                }
+            }
+            
+            Log::GetLog()->info("GetAndCacheTribeMemberCount: Tribe not found in TribesDataField cache, trying fallback");
         }
-        return memberCount;
+    }
+    catch (...)
+    {
+        Log::GetLog()->warn("GetAndCacheTribeMemberCount: TribesDataField scan failed, using fallback");
     }
 
-    // If memberCount is 0 but IsInTribe() is true, the lazy load hasn't finished yet.
-    // Return 0 and let the timer tick call this again in 60 seconds (or when player opens tribe UI).
-    return 0;
+    // METHOD 2: Fallback to lazy-loaded MyTribeDataField
+    try
+    {
+        const int memberCount = playerState->MyTribeDataField().MembersPlayerDataIDSet_ServerField().Num();
+        
+        if (memberCount > 0)
+        {
+            const auto cachedCount = CousinCustomRates::tribeMemberCountsByTeam.find(teamId);
+            if (cachedCount == CousinCustomRates::tribeMemberCountsByTeam.end() || 
+                cachedCount->second != memberCount)
+            {
+                CousinCustomRates::tribeMemberCountsByTeam[teamId] = memberCount;
+                if (cacheChanged)
+                    *cacheChanged = true;
+                
+                Log::GetLog()->info("GetAndCacheTribeMemberCount: SUCCESS (MyTribeDataField fallback) - teamId={}, count={}", 
+                    teamId, memberCount);
+            }
+            return memberCount;
+        }
+    }
+    catch (...)
+    {
+        Log::GetLog()->warn("GetAndCacheTribeMemberCount: MyTribeDataField also failed");
+    }
+
+    // If both methods fail, return 1 as safe default (better than 0 which disables multiplier)
+    Log::GetLog()->info("GetAndCacheTribeMemberCount: Both methods failed, returning 1 as safe default");
+    return 1;
 }
 
 bool RefreshKnownTribeMemberCounts()
