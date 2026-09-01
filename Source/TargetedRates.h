@@ -5,6 +5,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <API/ARK/Ark.h>
+#include <API/ARK/GameMode.h>
 
 // ---------------------------------------------------------------------------
 // Targeted tribe harvest boosts
@@ -122,34 +124,65 @@ float GetTribeSizeHarvestMultiplier(const int tribeMemberCount)
     return 1.0f;
 }
 
-// Reads the authoritative server-side membership set. Its count includes
-// offline members, unlike ARK's live-player tribe count functions.
+// Reads the authoritative server-side membership set using GetOrLoadTribeData.
+// Its count includes offline members and bypasses client-side lazy loading entirely.
+// Solo players (not in a tribe) return 1.
 int GetAndCacheTribeMemberCount(AShooterPlayerController* player, bool* cacheChanged = nullptr)
 {
-	if (cacheChanged)
-		*cacheChanged = false;
+    if (cacheChanged)
+        *cacheChanged = false;
 
     if (!player)
         return 0;
 
-    const int teamId = player->TargetingTeamField();
-    APlayerState* playerStateBase = player->PlayerStateField().Get();
-    if (teamId == 0 || !playerStateBase ||
-        !playerStateBase->IsA(AShooterPlayerState::GetPrivateStaticClass()))
+    AShooterGameMode* gameMode = AsaApi::GetApiUtils().GetShooterGameMode();
+    if (!gameMode)
+        return 0;
+
+    AShooterPlayerState* playerState = static_cast<AShooterPlayerState*>(player->PlayerStateField().Get());
+    if (!playerState)
+        return 0;
+
+    // Solo players (not in a tribe) count as tribe of 1 for TribeSizeMultiplier
+    if (!playerState->IsInTribe())
     {
+        return 1;
+    }
+
+    const int teamId = player->TargetingTeamField();
+    if (teamId == 0)
+        return 0;
+
+    // Load authoritative tribe data from disk/DB, excluding heavy log data
+    FTribeData loadedTribeData;
+    bool success = gameMode->GetOrLoadTribeData(
+        teamId, 
+        &loadedTribeData, 
+        ETribeDataExclude::TribeLogAndTrackingPoints
+    );
+
+    if (!success)
+    {
+        Log::GetLog()->warn("GetAndCacheTribeMemberCount: Failed to load tribe data for teamId={}", teamId);
         return 0;
     }
 
-    auto* playerState = static_cast<AShooterPlayerState*>(playerStateBase);
-    const int memberCount = playerState->MyTribeDataField().MembersPlayerDataIDSet_ServerField().Num();
+    // Get the authoritative member count from the loaded data
+    const int memberCount = loadedTribeData.MembersPlayerDataIDField().Num();
+    
     if (memberCount > 0)
     {
+        // Update cache if the count has changed
         const auto cachedCount = CousinCustomRates::tribeMemberCountsByTeam.find(teamId);
-        if (cachedCount == CousinCustomRates::tribeMemberCountsByTeam.end() || cachedCount->second != memberCount)
+        if (cachedCount == CousinCustomRates::tribeMemberCountsByTeam.end() || 
+            cachedCount->second != memberCount)
         {
             CousinCustomRates::tribeMemberCountsByTeam[teamId] = memberCount;
             if (cacheChanged)
                 *cacheChanged = true;
+            
+            Log::GetLog()->info("GetAndCacheTribeMemberCount: Cached tribe member count for teamId={}, count={}", 
+                teamId, memberCount);
         }
     }
 
