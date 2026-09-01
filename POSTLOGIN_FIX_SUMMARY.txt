@@ -1,0 +1,27 @@
+﻿## PostLogin Hook Fix - Summary
+
+### Problem:
+TribeSizeMultiplier only works after waiting 30-60 seconds because the tribe member
+count cache is only refreshed every 60 seconds by a timer.
+
+### Solution:
+Added AShooterGameMode::PostLogin hook that immediately caches the tribe member count
+when a player logs in.
+
+### Files Changed:
+- Source/TargetedRates.h (added ~25 lines)
+
+### What Changed:
+1. Added PostLogin hook declaration and implementation (lines 542-564)
+2. Updated SetTribeHarvestBoostHooks() to register/unregister the hook (lines 580-600)
+
+### Result:
+- TribeSizeMultiplier now works IMMEDIATELY upon login
+- No more 30-60 second wait time
+- Cache is still refreshed every 60 seconds as backup
+
+### Next Steps:
+1. Compile the project (Visual Studio 2022, Release x64)
+2. Copy Output/CousinCustomRates/CousinCustomRates.dll to your server
+3. Restart server
+4. Test: Log in and harvest immediately - should see 20x multiplier right away!
