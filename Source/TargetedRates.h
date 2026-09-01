@@ -539,6 +539,30 @@ void AddOrRemovePlayerRateCommands(bool addCommands = true)
     }
 }
 
+// ---------------------------------------------------------------------------
+// PostLogin hook - immediately cache tribe member count when player joins
+// ---------------------------------------------------------------------------
+DECLARE_HOOK(AShooterGameMode_PostLogin, void, AShooterGameMode*, APlayerController*);
+
+void Hook_AShooterGameMode_PostLogin(AShooterGameMode* gameMode, APlayerController* newPlayer)
+{
+    AShooterGameMode_PostLogin_original(gameMode, newPlayer);
+    
+    if (newPlayer && newPlayer->IsA(AShooterPlayerController::GetPrivateStaticClass()))
+    {
+        auto* shooterPC = static_cast<AShooterPlayerController*>(newPlayer);
+        bool changed = false;
+        GetAndCacheTribeMemberCount(shooterPC, &changed);
+        
+        if (changed)
+        {
+            SaveTargetedBoostState();
+            Log::GetLog()->info("PostLogin: cached tribe member count for player (team={}).", 
+                shooterPC->TargetingTeamField());
+        }
+    }
+}
+
 void SetTribeHarvestBoostHooks(bool addHooks = true)
 {
     if (addHooks)
@@ -553,7 +577,12 @@ void SetTribeHarvestBoostHooks(bool addHooks = true)
             Hook_UPrimalInventoryComponent_IncrementItemTemplateQuantity,
             &UPrimalInventoryComponent_IncrementItemTemplateQuantity_original
         );
-        Log::GetLog()->info("Tribe harvest context and quantity hooks registered.");
+        AsaApi::GetHooks().SetHook(
+            "AShooterGameMode.PostLogin(APlayerController*)",
+            Hook_AShooterGameMode_PostLogin,
+            &AShooterGameMode_PostLogin_original
+        );
+        Log::GetLog()->info("Tribe harvest context, quantity, and PostLogin hooks registered.");
     }
     else
     {
@@ -564,6 +593,10 @@ void SetTribeHarvestBoostHooks(bool addHooks = true)
         AsaApi::GetHooks().DisableHook(
             kIncrementItemTemplateQuantityHook,
             Hook_UPrimalInventoryComponent_IncrementItemTemplateQuantity
+        );
+        AsaApi::GetHooks().DisableHook(
+            "AShooterGameMode.PostLogin(APlayerController*)",
+            Hook_AShooterGameMode_PostLogin
         );
     }
 }
