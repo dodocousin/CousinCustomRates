@@ -159,6 +159,48 @@ void ValidateConfig()
 		}
 	}
 
+	// ---- 3c. ChangePlayerRate block -------------------------------------
+	if (cfg.contains("ChangePlayerRate"))
+	{
+		const nlohmann::json& cpr = cfg["ChangePlayerRate"];
+		if (!cpr.is_object())
+		{
+			warn("'ChangePlayerRate' is not a JSON object.");
+		}
+		else
+		{
+			if (cpr.contains("Enable") && !cpr["Enable"].is_boolean())
+				warn("ChangePlayerRate.Enable is not a boolean.");
+			if (cpr.contains("AlsoForTheTribe") && !cpr["AlsoForTheTribe"].is_boolean())
+				warn("ChangePlayerRate.AlsoForTheTribe is not a boolean.");
+			if (cpr.contains("Multiplier") && !cpr["Multiplier"].is_boolean())
+				warn("ChangePlayerRate.Multiplier is not a boolean.");
+
+			if (cpr.contains("HarvestAmount"))
+			{
+				if (!cpr["HarvestAmount"].is_number())
+					warn("ChangePlayerRate.HarvestAmount is not a number.");
+				else if (cpr["HarvestAmount"].get<float>() <= 0.0f)
+					warn("ChangePlayerRate.HarvestAmount is <= 0 - changePlayerRate will reject boosts.");
+			}
+
+			if (cpr.contains("DurationMinutes"))
+			{
+				if (!cpr["DurationMinutes"].is_number_integer())
+					warn("ChangePlayerRate.DurationMinutes must be an integer (minutes).");
+				else if (cpr["DurationMinutes"].get<int64_t>() < 0)
+					warn("ChangePlayerRate.DurationMinutes is < 0 - use 0 for a permanent boost.");
+			}
+
+			if (cpr.contains("ActivationMessage") && !cpr["ActivationMessage"].is_string())
+				warn("ChangePlayerRate.ActivationMessage is not a string.");
+			if (cpr.contains("ExpiryMessage") && !cpr["ExpiryMessage"].is_string())
+				warn("ChangePlayerRate.ExpiryMessage is not a string.");
+		}
+	}
+
+
+
 	// ---- 4. Schedule block validation ----------------------------------
 	if (cfg.contains("Schedule"))
 	{
@@ -536,17 +578,19 @@ void SaveState(const std::string& presetName)
 			stateJson["timed_fallback"] = CousinCustomRates::timedFallbackPreset;
 		}
 
-		// Persist every tribe harvest exception in the same document. This is
+		// Persist every player harvest boost in the same document. This is
 		// deliberately independent from the one global timed-preset state.
-		stateJson["tribe_harvest_boosts"] = nlohmann::json::array();
-		for (const auto& [teamId, boost] : CousinCustomRates::tribeHarvestBoosts)
+		stateJson["player_harvest_boosts"] = nlohmann::json::array();
+		for (const auto& [eosId, boost] : CousinCustomRates::playerHarvestBoosts)
 		{
-			stateJson["tribe_harvest_boosts"].push_back({
-				{"team_id", teamId},
-				{"preset", boost.presetName},
-				{"harvest_multiplier", boost.harvestMultiplier},
-				{"expiry", boost.expiryUnixTime},
-				{"notification_eos_id", boost.notificationEosId}
+			stateJson["player_harvest_boosts"].push_back({
+				{"eos_id", boost.targetEosId},
+				{"team_id", boost.teamId},
+				{"player_data_id", boost.playerDataId},
+				{"harvest_amount", boost.harvestAmount},
+				{"is_multiplier", boost.isMultiplier},
+				{"also_for_tribe", boost.alsoForTribe},
+				{"expiry", boost.expiryUnixTime}
 			});
 		}
 
@@ -603,26 +647,61 @@ std::string LoadState()
 		CousinCustomRates::timedPresetExpiry   = stateJson.value("timed_expiry",   static_cast<int64_t>(0));
 		CousinCustomRates::timedFallbackPreset = stateJson.value("timed_fallback", std::string(""));
 
-		// Restore valid, non-expired tribe harvest boosts. A boost that expired
+		// Restore valid, non-expired player harvest boosts. A boost that expired
 		// while the server was offline simply falls back to current global rates.
-		CousinCustomRates::tribeHarvestBoosts.clear();
+		CousinCustomRates::playerHarvestBoosts.clear();
 		const int64_t now = static_cast<int64_t>(std::time(nullptr));
-		if (stateJson.contains("tribe_harvest_boosts") && stateJson["tribe_harvest_boosts"].is_array())
+		if (stateJson.contains("player_harvest_boosts") && stateJson["player_harvest_boosts"].is_array())
+		{
+			for (const auto& entry : stateJson["player_harvest_boosts"])
+			{
+				if (!entry.is_object()) continue;
+				const std::string eosId = entry.value("eos_id", "");
+				const float amount = entry.value("harvest_amount", 0.0f);
+				const int64_t expiry = entry.value("expiry", static_cast<int64_t>(0));
+				if (eosId.empty() || amount <= 0.0f || (expiry > 0 && expiry <= now))
+					continue;
+
+				CousinCustomRates::PlayerHarvestBoost boost;
+				boost.targetEosId = eosId;
+				boost.teamId = entry.value("team_id", 0);
+				boost.playerDataId = entry.value("player_data_id", static_cast<unsigned long long>(0));
+				boost.harvestAmount = amount;
+				boost.isMultiplier = entry.value("is_multiplier", true);
+				boost.alsoForTribe = entry.value("also_for_tribe", true);
+				boost.expiryUnixTime = expiry;
+				CousinCustomRates::playerHarvestBoosts[eosId] = boost;
+			}
+		}
+
+		// Legacy migration: pre-redesign team-keyed boosts become tribe-wide
+		// fixed-rate boosts (they were absolute rates before the redesign).
+		else if (stateJson.contains("tribe_harvest_boosts") && stateJson["tribe_harvest_boosts"].is_array())
 		{
 			for (const auto& entry : stateJson["tribe_harvest_boosts"])
 			{
 				if (!entry.is_object()) continue;
 				const int teamId = entry.value("team_id", 0);
-				const std::string preset = entry.value("preset", "");
 				const float multiplier = entry.value("harvest_multiplier", 0.0f);
 				const int64_t expiry = entry.value("expiry", static_cast<int64_t>(0));
-				if (teamId == 0 || preset.empty() || multiplier <= 0.0f || (expiry > 0 && expiry <= now))
+				if (teamId == 0 || multiplier <= 0.0f || (expiry > 0 && expiry <= now))
 					continue;
 
-				CousinCustomRates::tribeHarvestBoosts[teamId] = {
-					preset, multiplier, expiry, entry.value("notification_eos_id", "")
-				};
+				CousinCustomRates::PlayerHarvestBoost boost;
+				boost.targetEosId = entry.value("notification_eos_id", "");
+				boost.teamId = teamId;
+				boost.harvestAmount = multiplier;
+				boost.isMultiplier = false;
+				boost.alsoForTribe = true;
+				boost.expiryUnixTime = expiry;
+
+				const std::string key = !boost.targetEosId.empty()
+					? boost.targetEosId
+					: "legacy_team_" + std::to_string(teamId);
+				CousinCustomRates::playerHarvestBoosts[key] = boost;
 			}
+
+			Log::GetLog()->info("LoadState: migrated legacy tribe_harvest_boosts entries.");
 		}
 
 		CousinCustomRates::tribeMemberCountsByTeam.clear();

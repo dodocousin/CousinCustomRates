@@ -11,14 +11,14 @@ Rates can be changed instantly via RCON or the in-game admin console, switched a
 | Feature | Description |
 |---|---|
 | **Rate presets** | Define unlimited named presets in `config.json`, each with its own multiplier values |
-| **RCON & console commands** | Switch global presets with `changerates <preset_name>` or give one tribe a harvest-only preset with `changePlayerRate <preset_name> <eosid>` |
+| **RCON & console commands** | Switch global presets with `changerates <preset_name>` or give one player a harvest-only boost with `changePlayerRate <eosid>` |
 | **Hot config reload** | Edit `config.json` and apply changes without restarting with `CousinCustomRates.Reload` |
 | **Persistent state** | The active preset is saved to `status.json` and automatically re-applied on every server restart |
 | **In-game broadcast** | Sends a server-wide message to all players when rates change (optional per preset) |
 | **Discord webhook** | Posts a notification to a Discord channel **only when rates are actively changed** — not on server restart (optional per preset) |
 | **Discord rich embed** | Each preset can define a formatted embed with title, color, and description (falls back to plain text if not configured) |
 | **Timed presets** | Any preset can have a `Duration` (in minutes) that causes it to automatically revert after the countdown expires |
-| **Targeted tribe harvest boosts** | Apply a preset's harvest rate to one online player's tribe without changing server-wide rates; timed boosts automatically fall back to the current global rate |
+| **Targeted player harvest boosts** | Give one online player (optionally their whole tribe) a harvest boost from the `ChangePlayerRate` config section - as a multiplier of the current global rate or a fixed rate - without changing server-wide rates; timed boosts automatically fall back to the current global rate |
 | **Automatic scheduler** | Optional day/hour schedule that switches presets automatically without any admin input |
 | **Config validation** | Every config load/reload validates the JSON structure and logs actionable warnings for any issues found |
 
@@ -48,44 +48,50 @@ All commands work both via **RCON** and the **in-game admin console** (Tab key).
 |---|---|
 | `changerates <preset_name>` | Activate a named preset immediately |
 | `changerates` *(no argument)* | Lists all available preset names |
-| `changePlayerRate <preset_name> <eosid>` | Apply the preset's harvest rate to the online target player's tribe only |
+| `changePlayerRate <eosid>` | Apply the `ChangePlayerRate` config boost to the online target player |
+| `changePlayerRate <eosid> off` | Remove that player's harvest boost early |
 | `CousinCustomRates.Reload` | Hot-reload `config.json` without restarting |
 
 **Examples:**
 ```
 changerates weekend_rates
 changerates event_rates
-changePlayerRate event_rates 00000000000000000000000000000000
+changePlayerRate 00000000000000000000000000000000
 CousinCustomRates.Reload
 ```
 
-### Targeted tribe harvest boosts
+### Targeted player harvest boosts
 
-`changePlayerRate` uses the supplied **EOS ID** to locate an online player,
-then assigns the selected preset to that player's ARK tribe/team. It changes
-only harvesting for that tribe; it does not modify the global server rate,
-other tribes, or the other multiplier fields in the preset.
+`changePlayerRate` uses the supplied **EOS ID** to locate an online player and
+applies the `ChangePlayerRate` section of `config.json` to them. It changes
+only harvesting for that player (or their tribe); it does not modify the
+global server rate or other tribes.
 
 ```text
-changePlayerRate <preset_name> <eosid>
+changePlayerRate <eosid> [off]
 ```
 
 Example:
 
 ```text
-changePlayerRate event_rates 00000000000000000000000000000000
+changePlayerRate 00000000000000000000000000000000
+changePlayerRate 00000000000000000000000000000000 off
 ```
 
-The target must be online and in a tribe. The EOS ID is used only to select
-the tribe and to deliver private messages. The boost itself is stored by the
-ARK tribe/team ID, so it applies to that tribe's members and tribe-owned dinos.
+The target must be online. The boost is stored by EOS ID together with the
+player's ARK player data ID, so it keeps working while they are offline and
+also covers their own tamed dinos. With `AlsoForTheTribe: true` the boost
+extends to the whole tribe (members and tribe dinos).
 
 #### Harvest-rate behavior
 
-The targeted preset's `HarvestAmountMultiplier` is an **absolute target rate**,
-not an additional multiplier. For example, if the active global rate is `10x`
-and the targeted preset has `HarvestAmountMultiplier: 50.0`, the boosted tribe
-harvests at `50x`, not `500x`.
+`ChangePlayerRate.Multiplier` controls how `HarvestAmount` is interpreted:
+
+- `true` — **multiplier of the current global rate**. If the active preset has
+  `HarvestAmountMultiplier: 2.0` and `HarvestAmount: 10`, boosted players
+  harvest at `20x`.
+- `false` — **fixed rate**. `HarvestAmount: 10` means a flat `10x` harvest,
+  whatever the global rate is.
 
 The implementation marks ARK's harvest-resource grant path, then adjusts only
 the matching item-quantity grant to that harvest's destination inventory. It
@@ -109,33 +115,47 @@ option back to `false` once testing is complete.
 
 #### Duration and expiry
 
-When `TimedPresets.Enabled` is `true`, a targeted boost reuses the selected
-preset's optional `Duration` in minutes. At expiry, the tribe-only exception
-is removed and that tribe immediately returns to the **currently active global
-server harvest rate**. The expiry never changes the global preset or scheduler.
+`ChangePlayerRate.DurationMinutes` sets the boost duration in minutes. At
+expiry, the boost is removed and affected players immediately return to the
+**currently active global server harvest rate**. The expiry never changes the
+global preset or the scheduler.
 
-Reapplying `changePlayerRate` to the same tribe replaces the prior targeted
-preset and resets its duration. A preset without `Duration`, or with
-`TimedPresets.Enabled: false`, creates a permanent targeted boost.
+Reapplying `changePlayerRate` to the same player replaces the prior boost and
+resets its duration. `DurationMinutes: 0` creates a permanent boost that lasts
+until it is removed with `changePlayerRate <eosid> off`.
 
 Targeted boosts are persisted in `status.json`. A still-valid timed boost is
 restored after restart; one that expired while the server was offline is simply
 discarded.
 
-The optional top-level `TribeHarvestBoostExpiredMessage` controls the private
-normal-chat message sent to the original EOS-ID target when a timed tribe boost
-expires:
+#### Private activation and expiry messages
+
+The optional `ActivationMessage` and `ExpiryMessage` fields inside
+`ChangePlayerRate` control the private normal-chat messages sent when a boost
+is applied or when a timed boost expires:
 
 ```json
-"TribeHarvestBoostExpiredMessage": "Your tribe harvest-rate boost has expired. Your tribe is now using the current server harvest rates."
+"ChangePlayerRate": {
+  "ActivationMessage": "Bonus de récolte activé : {rate}x pendant {duration} minute(s) !",
+  "ExpiryMessage": "Votre bonus de récolte de {rate}x pendant {duration} minute(s) est expiré."
+}
 ```
 
-Set it to `""` to suppress the expiry chat. If omitted, the built-in English
-message is used. The message is never broadcast server-wide and never sent to
-Discord.
+Supported placeholders are:
 
-The optional top-level `ChatSenderName` controls the sender label for both
-private targeted tribe-boost chat messages: activation and expiry.
+- `{rate}` — final effective harvest rate, such as `4` or `40`.
+- `{duration}` — the current `ChangePlayerRate.DurationMinutes` value.
+
+Set either message to `""` to suppress that notification. If a message is
+omitted, the plugin uses its built-in English message. These messages are never
+broadcast server-wide and are never sent to Discord.
+
+For backward compatibility, the top-level
+`TribeHarvestBoostExpiredMessage` remains supported as the expiry-message
+fallback when `ChangePlayerRate.ExpiryMessage` is omitted.
+
+The optional top-level `ChatSenderName` controls the sender label for the
+private boost chat messages: activation and expiry.
 
 ```json
 "ChatSenderName": "CousinCustomRates"
@@ -196,10 +216,8 @@ ArkApi/Plugins/CousinCustomRates/config.json
 ```
 
 The file has three main sections: **`RatePresets`**, **`TimedPresets`**, and
-**`Schedule`**. It also has optional top-level targeted tribe-harvest settings:
-`TribeHarvestBoostDebug`, `TribeHarvestBoostExpiredMessage`, and
-`TribeSizeMultiplier`. `ChatSenderName` is also available for targeted
-tribe-boost private chat.
+**`Schedule`**. `ChangePlayerRate` contains the optional targeted-harvest
+settings, including private activation and expiry message templates.
 
 ---
 
@@ -522,6 +540,15 @@ To clear the saved preset and revert to native `GameUserSettings.ini` defaults o
   },
   "TimedPresets": {
     "Enabled": true
+  },
+  "ChangePlayerRate": {
+    "Enable": true,
+    "AlsoForTheTribe": true,
+    "Multiplier": true,
+    "HarvestAmount": 10.0,
+    "DurationMinutes": 240,
+    "ActivationMessage": "Harvest boost active: {rate}x harvest for {duration} minute(s).",
+    "ExpiryMessage": "Your harvest-rate boost of {rate}x for {duration} minute(s) has expired."
   },
   "Schedule": {
     "Enabled": false,

@@ -4,9 +4,9 @@
   //
   // RCON / in-game console commands:
   //   changerates <preset_name>      — activate a preset immediately
-  //   changePlayerRate <preset_name> <eosid>
-  //                                  — apply ONLY the preset's HarvestAmountMultiplier
-  //                                    to the target player's entire tribe
+  //   changePlayerRate <eosid> [off] — apply the ChangePlayerRate section below
+  //                                    to a player (optionally their whole tribe);
+  //                                    'off' removes an active boost early
   //   CousinCustomRates.Reload       — hot-reload this file without restart
   // ===========================================================================
 
@@ -22,12 +22,6 @@
 
       // Message broadcast in-game to ALL players when this preset activates.
       // Leave as "" to skip the broadcast entirely.
-      //
-      // TARGETED TRIBE HARVEST NOTE:
-      // When this preset is used with changePlayerRate, this same message is
-      // sent as normal chat ONLY to the exact EOS-ID player named in the
-      // command. It is not broadcast server-wide and no Discord webhook is
-      // sent for a targeted tribe boost.
       "BroadcastMessage": "Weekend rates are now ACTIVE! Enjoy the boosted rates!",
 
       // Full Discord webhook URL for this preset's notification.
@@ -107,13 +101,8 @@
     // NOTE: The "Duration" field is silently ignored when TimedPresets.Enabled
     //       is false — no errors are logged.
     //
-    // TARGETED TRIBE HARVEST INTERACTION:
-    // The same Duration is used by:
-    //   changePlayerRate <preset_name> <eosid>
-    // When it expires, ONLY that tribe's harvest exception is removed. The
-    // tribe automatically returns to whichever global server preset is active
-    // at that moment. No global rate is changed, no server-wide message is
-    // sent, and no Discord webhook is posted.
+    // NOTE: changePlayerRate no longer uses presets. Targeted player boosts
+    // are configured in the ChangePlayerRate section further below.
     // -------------------------------------------------------------------------
     "event_rates": {
 
@@ -152,11 +141,53 @@
   },
 
   // ===========================================================================
+  // ChangePlayerRate (OPTIONAL)
+  //
+  // Settings for the command: changePlayerRate <eosid> [off]
+  // Gives ONE online player a harvest-only boost. The global server rates are
+  // never changed and nothing is broadcast server-wide or posted to Discord;
+  // the target player only receives a private chat message.
+  //
+  //   Enable          — master switch for the command.
+  //   AlsoForTheTribe — true:  the boost applies to the target player's whole
+  //                     tribe (members + tribe dinos).
+  //                     false: only the target player and their OWN dinos.
+  //   Multiplier      — true:  HarvestAmount multiplies the CURRENT global
+  //                     harvest rate. Example: the active preset has
+  //                     HarvestAmountMultiplier 2.0 and HarvestAmount is 10
+  //                     -> boosted players harvest at 20x.
+  //                     false: HarvestAmount is a FIXED harvest rate that
+  //                     replaces the global rate for boosted players
+  //                     (HarvestAmount 10 -> flat 10x, whatever the global is).
+  //   HarvestAmount   — the boost value (must be > 0).
+  //   DurationMinutes — boost duration in minutes. 0 = permanent until removed
+  //                     with 'changePlayerRate <eosid> off'.
+  //   ActivationMessage — private chat sent when the boost is applied. Use
+  //                     {rate} for the final harvest rate and {duration} for
+  //                     DurationMinutes. Leave empty to send no activation chat.
+  //   ExpiryMessage    — private chat sent when a timed boost expires. Supports
+  //                     {rate} and {duration}; leave empty to suppress it.
+  //
+  // Boosts survive server restarts (saved in status.json); a boost that
+  // expired while the server was offline is simply discarded.
+  // Re-running the command for the same player replaces the previous boost.
+  // ===========================================================================
+  "ChangePlayerRate": {
+    "Enable": true,
+    "AlsoForTheTribe": true,
+    "Multiplier": true,
+    "HarvestAmount": 10.0,
+    "DurationMinutes": 240,
+    "ActivationMessage": "Harvest boost active: {rate}x harvest for {duration} minute(s).",
+    "ExpiryMessage": "Your harvest-rate boost of {rate}x for {duration} minute(s) has expired. You are now using the current server harvest rates."
+  },
+
+  // ===========================================================================
   // ChatSenderName (OPTIONAL)
   //
   // Sender name shown in the normal private chat messages sent by
-  // changePlayerRate, including the activation BroadcastMessage and the timed
-  // tribe boost expiry message. If omitted or empty, "CousinCustomRates" is
+  // changePlayerRate, including the boost activation message and the boost
+  // expiry message. If omitted or empty, "CousinCustomRates" is
   // used. This does not change global notifications or Discord messages.
   // ===========================================================================
   "ChatSenderName": "CousinCustomRates",
@@ -203,14 +234,14 @@
   "TribeHarvestBoostDebug": false,
 
   // ===========================================================================
-  // TribeHarvestBoostExpiredMessage (OPTIONAL)
+  // TribeHarvestBoostExpiredMessage (LEGACY OPTIONAL)
   //
   // Normal server chat sent ONLY to the original EOS-ID player when their
-  // timed changePlayerRate tribe harvest boost expires. It is not broadcast
-  // server-wide and does not post to Discord. Leave it empty to send no expiry
-  // chat message. If omitted, the plugin uses its built-in English message.
+  // changePlayerRate harvest boost expires. It is used only when
+  // ChangePlayerRate.ExpiryMessage is omitted. It is not broadcast server-wide
+  // and does not post to Discord. Leave it empty to send no expiry chat message.
   // ===========================================================================
-  "TribeHarvestBoostExpiredMessage": "Your tribe harvest-rate boost has expired. Your tribe is now using the current server harvest rates.",
+  "TribeHarvestBoostExpiredMessage": "Your harvest-rate boost has expired. You are now using the current server harvest rates.",
 
   // ===========================================================================
   // Schedule (OPTIONAL)

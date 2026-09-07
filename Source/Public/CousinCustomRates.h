@@ -9,15 +9,17 @@
 
 namespace CousinCustomRates
 {
-	// A harvest-only override assigned to an ARK tribe/team. The multiplier is
-	// interpreted as an absolute target rate; the harvest hook compensates for
-	// whichever global HarvestAmountMultiplier is currently active.
-	struct TribeHarvestBoost
+	// A harvest-only override for a specific player or their entire tribe.
+	// Can be either a multiplier (stacks with global) or fixed rate (absolute).
+	struct PlayerHarvestBoost
 	{
-		std::string presetName;
-		float harvestMultiplier = 1.0f;
-		int64_t expiryUnixTime = 0; // 0 = permanent
-		std::string notificationEosId;
+		std::string targetEosId;        // The player who received the boost
+		int teamId = 0;                  // Their tribe ID
+		unsigned long long playerDataId = 0; // LinkedPlayerDataID (uint64 in the ASA API) — matches their character and own dinos
+		float harvestAmount = 1.0f;      // The harvest value (multiplier or fixed)
+		bool isMultiplier = true;        // true = multiply by global rate, false = absolute rate
+		bool alsoForTribe = true;        // true = whole tribe, false = only target player + dinos
+		int64_t expiryUnixTime = 0;      // 0 = permanent
 	};
 
 	// Parsed config.json contents
@@ -49,8 +51,9 @@ namespace CousinCustomRates
 	inline int64_t    timedPresetExpiry    = 0;
 	inline std::string timedFallbackPreset;
 
-	// Targeted harvest boosts, keyed by ARK TargetingTeam / tribe ID.
-	inline std::unordered_map<int, TribeHarvestBoost> tribeHarvestBoosts;
+	// Player-specific harvest boosts, keyed by EOS ID.
+	// When alsoForTribe=false, only the target player gets the boost (other tribe members don't).
+	inline std::unordered_map<std::string, PlayerHarvestBoost> playerHarvestBoosts;
 
 	// Last known total tribe membership count, keyed by the local ARK team ID.
 	// This is refreshed from online player states and lets unmounted tames use

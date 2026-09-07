@@ -9,12 +9,14 @@
 #include <API/ARK/GameMode.h>
 
 // ---------------------------------------------------------------------------
-// Targeted tribe harvest boosts
+// Targeted player harvest boosts
 //
-// A boost is stored by ARK tribe/team ID, not by EOS ID. EOS is used only to
-// find the online command target and to send that one player private chat.
-// The verified GiveHarvestResource hook changes only harvest calculations;
-// it never changes AShooterGameMode's global harvest multiplier.
+// Boosts are stored by EOS ID (see PlayerHarvestBoost in CousinCustomRates.h).
+// The harvest hook matches the boosted player's character and their own dinos
+// via the ARK player data ID, and tribe members / tribe dinos via the team ID
+// when the boost is tribe-wide. The verified GiveHarvestResource hook changes
+// only harvest calculations; it never changes AShooterGameMode's global
+// harvest multiplier.
 // ---------------------------------------------------------------------------
 
 constexpr const char* kGiveHarvestResourceHook =
@@ -281,6 +283,99 @@ int GetHarvestingTeamId(AActor* harvestingActor, int& tribeMemberCount)
     return 0;
 }
 
+// Formats a rate for chat/log output without trailing zeros (20.0 -> "20").
+std::string FormatHarvestRate(float rate)
+{
+    std::ostringstream ss;
+    ss << rate;
+    return ss.str();
+}
+
+// Replaces the supported ChangePlayerRate message-template placeholders.
+// Unknown text, including unsupported placeholders, is intentionally retained.
+std::string FormatPlayerHarvestBoostMessage(
+    std::string message, const float effectiveRate, const int64_t durationMinutes)
+{
+    const auto replaceAll = [&message](const std::string& placeholder, const std::string& value)
+    {
+        size_t position = 0;
+        while ((position = message.find(placeholder, position)) != std::string::npos)
+        {
+            message.replace(position, placeholder.length(), value);
+            position += value.length();
+        }
+    };
+
+    replaceAll("{rate}", FormatHarvestRate(effectiveRate));
+    replaceAll("{duration}", std::to_string(durationMinutes));
+    return message;
+}
+
+// Finds the active (non-expired) player harvest boost that applies to this
+// harvest. Matching rules:
+//   1. Player character harvest -> boost whose playerDataId matches the
+//      character's LinkedPlayerDataID (the boosted player themselves).
+//   2. Dino harvest             -> boost whose playerDataId matches the dino's
+//      OwningPlayerID (the boosted player's own tames), even for player-only
+//      boosts.
+//   3. Any harvest              -> tribe-wide boost (alsoForTribe) whose
+//      teamId matches the harvesting team (tribe members and tribe dinos).
+// Expired entries are skipped here; the boost timer removes them.
+const CousinCustomRates::PlayerHarvestBoost* FindActiveBoostForHarvest(
+    AActor* harvestingActor, int teamId)
+{
+    if (CousinCustomRates::playerHarvestBoosts.empty())
+        return nullptr;
+
+    const int64_t now = static_cast<int64_t>(std::time(nullptr));
+
+    // The harvester's own ARK player data ID (0 = none). Player characters
+    // expose it as LinkedPlayerDataID (uint64); dinos expose their owner's ID
+    // as OwningPlayerID (int32), so dino matches compare the low 32 bits.
+    unsigned long long harvesterPlayerDataId = 0;
+    bool harvesterIsDino = false;
+    if (harvestingActor)
+    {
+        if (harvestingActor->IsA(APrimalDinoCharacter::GetPrivateStaticClass()))
+        {
+            harvesterIsDino = true;
+            const int ownerId =
+                static_cast<APrimalDinoCharacter*>(harvestingActor)->OwningPlayerIDField();
+            if (ownerId > 0)
+                harvesterPlayerDataId = static_cast<unsigned int>(ownerId);
+        }
+        else if (harvestingActor->IsA(AShooterCharacter::GetPrivateStaticClass()))
+        {
+            harvesterPlayerDataId =
+                static_cast<AShooterCharacter*>(harvestingActor)->LinkedPlayerDataIDField();
+        }
+    }
+
+    const CousinCustomRates::PlayerHarvestBoost* tribeBoost = nullptr;
+    for (const auto& [eosId, boost] : CousinCustomRates::playerHarvestBoosts)
+    {
+        if (boost.expiryUnixTime != 0 && boost.expiryUnixTime <= now)
+            continue;
+
+        // Direct owner match: the boosted player's character or own dino.
+        if (harvesterPlayerDataId != 0 && boost.playerDataId != 0)
+        {
+            const bool idMatch = harvesterIsDino
+                ? static_cast<unsigned int>(boost.playerDataId) ==
+                      static_cast<unsigned int>(harvesterPlayerDataId)
+                : boost.playerDataId == harvesterPlayerDataId;
+            if (idMatch)
+                return &boost;
+        }
+
+        // Tribe-wide match: first active tribe boost for this team wins.
+        if (!tribeBoost && boost.alsoForTribe && teamId != 0 && boost.teamId == teamId)
+            tribeBoost = &boost;
+    }
+
+    return tribeBoost;
+}
+
 // GiveHarvestResource is the cache-verified ARK harvest-only resource-award
 // path. Its float argument is harvest-calculation input, not a documented final
 // item quantity, so this hook only establishes the scoped harvest context.
@@ -294,7 +389,8 @@ void Hook_UPrimalHarvestingComponent_GiveHarvestResource(
 {
     int tribeMemberCount = 0;
     const int teamId = GetHarvestingTeamId(harvestingActor, tribeMemberCount);
-    auto boostIt = CousinCustomRates::tribeHarvestBoosts.find(teamId);
+    const CousinCustomRates::PlayerHarvestBoost* boost =
+        FindActiveBoostForHarvest(harvestingActor, teamId);
     HarvestQuantityContext context;
 
     if (teamId != 0)
@@ -305,14 +401,16 @@ void Hook_UPrimalHarvestingComponent_GiveHarvestResource(
             const float globalMultiplier = gameMode->HarvestAmountMultiplierField();
             if (globalMultiplier > 0.0f)
             {
+                // Multiplier boost: stacks with the active global and tribe-size
+                // harvest rates (global 2.0 x tribe size 4.0 x boost 10 = 80x).
+                // Fixed boost: an absolute final rate that replaces both rates
+                // for this harvest only.
                 float targetMultiplier = globalMultiplier;
-                if (boostIt != CousinCustomRates::tribeHarvestBoosts.end())
+                if (boost)
                 {
-                    const int64_t now = static_cast<int64_t>(std::time(nullptr));
-                    if (boostIt->second.expiryUnixTime == 0 || boostIt->second.expiryUnixTime > now)
-                    {
-                        targetMultiplier = boostIt->second.harvestMultiplier;
-                    }
+                    targetMultiplier = boost->isMultiplier
+                        ? globalMultiplier * boost->harvestAmount
+                        : boost->harvestAmount;
                 }
 
                 const float sizeMultiplier = GetTribeSizeHarvestMultiplier(tribeMemberCount);
@@ -322,7 +420,9 @@ void Hook_UPrimalHarvestingComponent_GiveHarvestResource(
                 context.globalMultiplier = globalMultiplier;
                 context.targetMultiplier = targetMultiplier;
                 context.tribeSizeMultiplier = sizeMultiplier;
-                context.correction = (targetMultiplier * sizeMultiplier) / globalMultiplier;
+                context.correction = (boost && !boost->isMultiplier)
+                    ? targetMultiplier / globalMultiplier
+                    : (targetMultiplier * sizeMultiplier) / globalMultiplier;
                 context.applies = context.correction > 0.0f && context.correction != 1.0f;
 
                 if (context.applies && IsTribeHarvestBoostDebugEnabled())
@@ -420,40 +520,59 @@ void SaveTargetedBoostState()
     SaveState(CousinCustomRates::lastPreset);
 }
 
-// Expiry removes the tribe exception only. The tribe immediately resumes the
-// current global preset's harvest rate; no global preset is applied.
-void ExpireTribeHarvestBoosts()
+// Expiry removes the player boost only. Affected players immediately resume
+// the current global preset's harvest rate; no global preset is applied.
+void ExpirePlayerHarvestBoosts()
 {
     const int64_t now = static_cast<int64_t>(std::time(nullptr));
     bool changed = false;
 
-    for (auto it = CousinCustomRates::tribeHarvestBoosts.begin();
-        it != CousinCustomRates::tribeHarvestBoosts.end();)
+    for (auto it = CousinCustomRates::playerHarvestBoosts.begin();
+        it != CousinCustomRates::playerHarvestBoosts.end();)
     {
-        const CousinCustomRates::TribeHarvestBoost& boost = it->second;
+        const CousinCustomRates::PlayerHarvestBoost boost = it->second;
         if (boost.expiryUnixTime == 0 || boost.expiryUnixTime > now)
         {
             ++it;
             continue;
         }
 
-        const std::string eosId = boost.notificationEosId;
-        Log::GetLog()->info("Tribe harvest boost for team {} using preset '{}' expired.",
-            it->first, boost.presetName);
-        it = CousinCustomRates::tribeHarvestBoosts.erase(it);
+        Log::GetLog()->info("Player harvest boost for EOS ID '{}' (team {}) expired.",
+            boost.targetEosId, boost.teamId);
+        it = CousinCustomRates::playerHarvestBoosts.erase(it);
         changed = true;
 
-        // The original target may be offline. Do not broadcast or queue a
-        // delayed message; targeted boost chat is intentionally private.
-        if (!eosId.empty())
+        // The target may be offline. Do not broadcast or queue a delayed
+        // message; targeted boost chat is intentionally private.
+        AShooterPlayerController* target =
+            AsaApi::GetApiUtils().FindPlayerFromEOSID(FString(boost.targetEosId.c_str()));
+        const nlohmann::json* settings = nullptr;
+        if (CousinCustomRates::config.contains("ChangePlayerRate") &&
+            CousinCustomRates::config["ChangePlayerRate"].is_object())
         {
-            AShooterPlayerController* target =
-                AsaApi::GetApiUtils().FindPlayerFromEOSID(FString(eosId.c_str()));
-            const std::string expiryMessage = CousinCustomRates::config.value(
-                "TribeHarvestBoostExpiredMessage",
-                "Your tribe harvest-rate boost has expired. Your tribe is now using the current server harvest rates.");
-            SendTargetedBoostChat(target, expiryMessage);
+            settings = &CousinCustomRates::config["ChangePlayerRate"];
         }
+
+        const int64_t durationMinutes = settings
+            ? settings->value("DurationMinutes", static_cast<int64_t>(0))
+            : 0;
+        float globalMultiplier = 1.0f;
+        AShooterGameMode* gameMode = AsaApi::GetApiUtils().GetShooterGameMode();
+        if (gameMode)
+            globalMultiplier = gameMode->HarvestAmountMultiplierField();
+
+        const float effectiveRate = boost.isMultiplier
+            ? globalMultiplier * boost.harvestAmount
+            : boost.harvestAmount;
+        const std::string expiryTemplate = settings
+            ? settings->value("ExpiryMessage", CousinCustomRates::config.value(
+                "TribeHarvestBoostExpiredMessage",
+                "Your harvest-rate boost has expired. You are now using the current server harvest rates."))
+            : CousinCustomRates::config.value(
+                "TribeHarvestBoostExpiredMessage",
+                "Your harvest-rate boost has expired. You are now using the current server harvest rates.");
+        SendTargetedBoostChat(target,
+            FormatPlayerHarvestBoostMessage(expiryTemplate, effectiveRate, durationMinutes));
     }
 
     if (changed)
@@ -470,7 +589,7 @@ void TribeHarvestBoostTimerCallback()
             SaveTargetedBoostState();
     }
 
-    ExpireTribeHarvestBoosts();
+    ExpirePlayerHarvestBoosts();
 }
 
 void AddOrRemoveTribeHarvestBoostTimer(bool addTimer = true)
@@ -482,15 +601,29 @@ void AddOrRemoveTribeHarvestBoostTimer(bool addTimer = true)
         AsaApi::GetCommands().RemoveOnTimerCallback("CousinCustomRatesTribeBoostTimer");
 }
 
-// Resolves the supplied online EOS target and stores the selected preset against
-// its tribe team. Duration follows the existing TimedPresets.Enabled rule.
-bool ApplyTribeHarvestBoost(const FString& presetName, const FString& eosId, FString& result)
+// Applies the ChangePlayerRate config section to one online player. Depending
+// on config, the boost covers only that player (character + own dinos) or
+// their entire tribe. Duration comes from ChangePlayerRate.DurationMinutes.
+bool ApplyPlayerHarvestBoost(const FString& eosId, FString& result)
 {
-    const std::string presetKey = presetName.ToString();
-    if (!CousinCustomRates::config.contains("RatePresets") ||
-        !CousinCustomRates::config["RatePresets"].contains(presetKey))
+    if (!CousinCustomRates::config.contains("ChangePlayerRate") ||
+        !CousinCustomRates::config["ChangePlayerRate"].is_object())
     {
-        result = FString("Preset '") + presetName + FString("' does not exist.");
+        result = "The 'ChangePlayerRate' section is missing from config.json.";
+        return false;
+    }
+
+    const nlohmann::json& settings = CousinCustomRates::config["ChangePlayerRate"];
+    if (!settings.value("Enable", false))
+    {
+        result = "ChangePlayerRate is disabled in config.json (Enable = false).";
+        return false;
+    }
+
+    const float harvestAmount = settings.value("HarvestAmount", 0.0f);
+    if (harvestAmount <= 0.0f)
+    {
+        result = "ChangePlayerRate.HarvestAmount must be a number greater than 0.";
         return false;
     }
 
@@ -502,56 +635,99 @@ bool ApplyTribeHarvestBoost(const FString& presetName, const FString& eosId, FSt
     }
 
     const int teamId = target->TargetingTeamField();
-    if (teamId == 0)
-    {
-        result = "The target player is not in a tribe, so a tribe harvest boost cannot be applied.";
-        return false;
-    }
+    const bool isMultiplier = settings.value("Multiplier", true);
+    const int64_t durationMinutes = settings.value("DurationMinutes", static_cast<int64_t>(0));
+
+    // AlsoForTheTribe requires an actual tribe; solo players always get a
+    // player-only boost (their character and their own dinos).
+    const bool alsoForTribe = settings.value("AlsoForTheTribe", false) && teamId != 0;
+
+    int64_t expiry = 0;
+    if (durationMinutes > 0)
+        expiry = static_cast<int64_t>(std::time(nullptr)) + durationMinutes * 60LL;
 
     GetAndCacheTribeMemberCount(target);
 
-    const nlohmann::json& preset = CousinCustomRates::config["RatePresets"][presetKey];
-    const float multiplier = preset.value("HarvestAmountMultiplier", 0.0f);
-    if (multiplier <= 0.0f)
-    {
-        result = FString("Preset '") + presetName + FString("' has an invalid HarvestAmountMultiplier.");
-        return false;
-    }
+    // Capture the player's data ID so the harvest hook can match their
+    // character and their own dinos even while they are offline.
+    unsigned long long playerDataId = 0;
+    AShooterCharacter* character = target->GetPlayerCharacter();
+    if (character)
+        playerDataId = character->LinkedPlayerDataIDField();
 
-    int64_t expiry = 0;
-    const bool timedEnabled = CousinCustomRates::config.contains("TimedPresets") &&
-        CousinCustomRates::config["TimedPresets"].value("Enabled", false);
-    if (timedEnabled && preset.contains("Duration") && preset["Duration"].is_number_integer())
-    {
-        const int64_t minutes = preset["Duration"].get<int64_t>();
-        if (minutes > 0)
-            expiry = static_cast<int64_t>(std::time(nullptr)) + minutes * 60LL;
-    }
+    CousinCustomRates::PlayerHarvestBoost boost;
+    boost.targetEosId = eosId.ToString();
+    boost.teamId = teamId;
+    boost.playerDataId = playerDataId;
+    boost.harvestAmount = harvestAmount;
+    boost.isMultiplier = isMultiplier;
+    boost.alsoForTribe = alsoForTribe;
+    boost.expiryUnixTime = expiry;
 
-    CousinCustomRates::tribeHarvestBoosts[teamId] = {
-        presetKey, multiplier, expiry, eosId.ToString()
-    };
+    CousinCustomRates::playerHarvestBoosts[boost.targetEosId] = boost;
     SaveTargetedBoostState();
 
-    // BroadcastMessage is deliberately private for targeted boosts. Webhooks
-    // and global HUD notifications are exclusive to global changerates.
-    SendTargetedBoostChat(target, preset.value("BroadcastMessage", ""));
+    // Describe the effective rate using the current global harvest multiplier.
+    float globalMultiplier = 1.0f;
+    AShooterGameMode* gameMode = AsaApi::GetApiUtils().GetShooterGameMode();
+    if (gameMode)
+        globalMultiplier = gameMode->HarvestAmountMultiplierField();
 
-    result = FString("Applied tribe harvest preset '") + presetName +
-        FString("' to EOS ID '") + eosId + FString("'.");
+    const float effectiveRate = isMultiplier
+        ? globalMultiplier * harvestAmount
+        : harvestAmount;
+
+    // Targeted boost chat is deliberately private. Webhooks and global HUD
+    // notifications are exclusive to global changerates.
+    const std::string activationTemplate = settings.value(
+        "ActivationMessage",
+        "Harvest boost active: {rate}x harvest for {duration} minute(s).");
+    SendTargetedBoostChat(target,
+        FormatPlayerHarvestBoostMessage(activationTemplate, effectiveRate, durationMinutes));
+
+    result = FString("Applied harvest boost to EOS ID '") + eosId + FString("': ") +
+        FString(FormatHarvestRate(harvestAmount).c_str()) +
+        FString(isMultiplier ? "x multiplier on the global rate (effective " : "x fixed rate (effective ") +
+        FString(FormatHarvestRate(effectiveRate).c_str()) + FString("x), ") +
+        FString(alsoForTribe ? "tribe-wide" : "player + own dinos");
     if (expiry > 0)
     {
-        result += FString(" It expires in ") +
-            FString(std::to_string(preset["Duration"].get<int64_t>()).c_str()) +
-            FString(" minute(s).");
+        result += FString(", expires in ") +
+            FString(std::to_string(durationMinutes).c_str()) + FString(" minute(s)");
     }
+    result += FString(".");
 
-    Log::GetLog()->info("Applied tribe harvest preset '{}' to team {} for EOS ID '{}'.",
-        presetKey, teamId, eosId.ToString());
+    Log::GetLog()->info(
+        "Applied player harvest boost to EOS ID '{}' (team {}, playerDataId {}): amount={} multiplier={} tribe={} expiry={}.",
+        boost.targetEosId, teamId, playerDataId, harvestAmount, isMultiplier, alsoForTribe, expiry);
     return true;
 }
 
-// RCON / console command: changePlayerRate <preset_name> <eosid>
+// Removes an active player harvest boost early (changePlayerRate <eosid> off).
+bool RemovePlayerHarvestBoost(const std::string& eosId, FString& result)
+{
+    auto it = CousinCustomRates::playerHarvestBoosts.find(eosId);
+    if (it == CousinCustomRates::playerHarvestBoosts.end())
+    {
+        result = FString("No active harvest boost was found for EOS ID '") +
+            FString(eosId.c_str()) + FString("'.");
+        return false;
+    }
+
+    CousinCustomRates::playerHarvestBoosts.erase(it);
+    SaveTargetedBoostState();
+
+    AShooterPlayerController* target =
+        AsaApi::GetApiUtils().FindPlayerFromEOSID(FString(eosId.c_str()));
+    SendTargetedBoostChat(target,
+        "Your harvest-rate boost has been removed. You are now using the current server harvest rates.");
+
+    Log::GetLog()->info("Removed player harvest boost for EOS ID '{}'.", eosId);
+    result = FString("Removed harvest boost for EOS ID '") + FString(eosId.c_str()) + FString("'.");
+    return true;
+}
+
+// RCON / console command: changePlayerRate <eosid> [off]
 void ChangePlayerRateRcon(RCONClientConnection* connection, RCONPacket* packet, UWorld*)
 {
     if (!connection || !packet)
@@ -559,15 +735,17 @@ void ChangePlayerRateRcon(RCONClientConnection* connection, RCONPacket* packet, 
 
     std::istringstream input(packet->Body.ToString());
     std::string command;
-    std::string preset;
     std::string eosId;
-    input >> command >> preset >> eosId;
+    std::string action;
+    input >> command >> eosId >> action;
 
     FString reply;
-    if (preset.empty() || eosId.empty())
-        reply = "Usage: changePlayerRate <preset_name> <eosid>";
+    if (eosId.empty())
+        reply = "Usage: changePlayerRate <eosid> [off] - 'off' removes an active boost.";
+    else if (action == "off" || action == "remove")
+        RemovePlayerHarvestBoost(eosId, reply);
     else
-        ApplyTribeHarvestBoost(FString(preset.c_str()), FString(eosId.c_str()), reply);
+        ApplyPlayerHarvestBoost(FString(eosId.c_str()), reply);
 
     connection->SendMessageW(packet->Id, 0, &reply);
 }
@@ -580,15 +758,17 @@ void ChangePlayerRateConsole(APlayerController* playerBase, FString* message, bo
     auto* admin = static_cast<AShooterPlayerController*>(playerBase);
     std::istringstream input(message->ToString());
     std::string command;
-    std::string preset;
     std::string eosId;
-    input >> command >> preset >> eosId;
+    std::string action;
+    input >> command >> eosId >> action;
 
     FString reply;
-    if (preset.empty() || eosId.empty())
-        reply = "Usage: changePlayerRate <preset_name> <eosid>";
+    if (eosId.empty())
+        reply = "Usage: changePlayerRate <eosid> [off] - 'off' removes an active boost.";
+    else if (action == "off" || action == "remove")
+        RemovePlayerHarvestBoost(eosId, reply);
     else
-        ApplyTribeHarvestBoost(FString(preset.c_str()), FString(eosId.c_str()), reply);
+        ApplyPlayerHarvestBoost(FString(eosId.c_str()), reply);
 
     AsaApi::GetApiUtils().SendServerMessage(
         admin, FLinearColor(1.0f, 0.9f, 0.0f, 1.0f), "{}", reply.ToString());

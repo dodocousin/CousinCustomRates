@@ -50,6 +50,15 @@
   "TimedPresets": {
     "Enabled": true
   },
+  "ChangePlayerRate": {
+    "Enable": true,
+    "AlsoForTheTribe": true,
+    "Multiplier": true,
+    "HarvestAmount": 10.0,
+    "DurationMinutes": 240,
+    "ActivationMessage": "Harvest boost active: {rate}x harvest for {duration} minute(s).",
+    "ExpiryMessage": "Your harvest-rate boost of {rate}x for {duration} minute(s) has expired. You are now using the current server harvest rates."
+  },
   "ChatSenderName": "CousinCustomRates",
   "TribeSizeMultiplier": {
     "Enabled": false,
@@ -61,7 +70,7 @@
     ]
   },
   "TribeHarvestBoostDebug": false,
-  "TribeHarvestBoostExpiredMessage": "Your tribe harvest-rate boost has expired. Your tribe is now using the current server harvest rates.",
+  "TribeHarvestBoostExpiredMessage": "Your harvest-rate boost has expired. You are now using the current server harvest rates.",
   "Schedule": {
     "Enabled": false,
     "CheckIntervalSeconds": 60,
