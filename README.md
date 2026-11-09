@@ -188,6 +188,13 @@ With a global harvest rate of `2x`, the example gives a one-member tribe `8x`
 final harvest and a six-member tribe `1x` final harvest. A tribe with four or
 five members is not listed, so it remains at `2x`.
 
+Decimal multipliers are supported. For example, with a global harvest rate of
+`10x`, `{ "TribeSize": 1, "Multiplier": 1.5 }` produces `15x` final harvest.
+ARK grants resources as whole items and can send several one-item grants for a
+single harvest. The plugin carries the decimal remainder into following grants,
+so ten one-item grants at `1.5x` produce 15 items in total rather than rounding
+each grant up to 2 items.
+
 The modifier also combines with `changePlayerRate`. For example, a targeted
 tribe rate of `20x` and a one-member size modifier of `4x` produces `80x` final
 harvest for that tribe.

@@ -140,7 +140,22 @@ void SetTimers(bool addTmr = true)
 		if (!scheduleEnabled) return;
 
 		s_scheduleTickCounter = 0; // reset on (re-)register
-		AsaApi::GetCommands().AddOnTimerCallback("CousinCustomRatesTimer", &TimerCallback);
+		AsaApi::GetCommands().AddOnTimerCallback("CousinCustomRatesTimer", []()
+		{
+			// Timer callback: never let an exception escape (server crash).
+			try
+			{
+				TimerCallback();
+			}
+			catch (const std::exception& e)
+			{
+				Log::GetLog()->error("Schedule timer exception: {}", e.what());
+			}
+			catch (...)
+			{
+				Log::GetLog()->error("Schedule timer unknown exception.");
+			}
+		});
 		Log::GetLog()->info("Schedule timer registered (interval: {}s).",
 			CousinCustomRates::config["Schedule"].value("CheckIntervalSeconds", 60));
 	}

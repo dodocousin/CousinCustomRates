@@ -29,6 +29,8 @@ void Reload()
 // ---------------------------------------------------------------------------
 void ReloadConfigRcon(RCONClientConnection* rcon_connection, RCONPacket* rcon_packet, UWorld*)
 {
+	if (!rcon_connection || !rcon_packet) return;
+
 	FString reply;
 
 	try
@@ -54,6 +56,9 @@ void ReloadConfigRcon(RCONClientConnection* rcon_connection, RCONPacket* rcon_pa
 // ---------------------------------------------------------------------------
 void ReloadConfigConsole(APlayerController* player_base, FString* /*message*/, bool /*written_to_console*/)
 {
+	if (!player_base || !player_base->IsValidLowLevelFast(false)
+		|| !player_base->IsA(AShooterPlayerController::GetPrivateStaticClass()))
+		return;
 	AShooterPlayerController* player = static_cast<AShooterPlayerController*>(player_base);
 
 	FString reply;

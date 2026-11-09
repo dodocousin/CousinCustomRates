@@ -210,6 +210,11 @@
   //   TribeSize 1, Multiplier 4.0  -> 8x final harvest.
   //   TribeSize 6, Multiplier 0.5  -> 1x final harvest.
   //
+  // DECIMAL EXAMPLE WITH GLOBAL 10x HARVEST:
+  //   TribeSize 1, Multiplier 1.5  -> 15x final harvest.
+  //   Decimal remainders carry between integer item grants, so ten one-item
+  //   grants at 1.5x produce 15 items in total (not 20).
+  //
   // EXAMPLE WITH changePlayerRate TARGET 20x AND TRIBE SIZE 1 AT 4.0:
   //   Final targeted harvest rate -> 80x.
   // ===========================================================================
@@ -228,7 +233,8 @@
   //
   // Set true only while diagnosing changePlayerRate harvest results. For each
   // targeted harvest, the server log shows the tribe team, active global rate,
-  // target rate, correction factor, and original versus adjusted item amount.
+  // target rate, correction factor, original/unrounded/adjusted item amounts,
+  // and the carried decimal remainder.
   // Set false again after testing to avoid extra harvest log entries.
   // ===========================================================================
   "TribeHarvestBoostDebug": false,

@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <ctime>
+#include <unordered_map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -74,6 +75,77 @@ struct HarvestQuantityContext
 };
 
 inline thread_local std::vector<HarvestQuantityContext> s_harvestQuantityContexts;
+
+// ARK grants harvested resources as integer item quantities and can issue a
+// harvest as several one-item increments. Rounding every increment separately
+// makes 1.5x act like 2x for those one-item increments. Carry each destination
+// inventory's fractional remainder into its next qualifying harvest grant.
+inline thread_local std::unordered_map<UPrimalInventoryComponent*, double>
+    s_harvestQuantityRemaindersByInventory;
+
+constexpr int kHarvestQuantityMaxInt = 2147483647;
+
+float CalculateHarvestQuantityCorrection(const float globalMultiplier,
+                                         const float targetMultiplier,
+                                         const float tribeSizeMultiplier,
+                                         const bool fixedTargetRate)
+{
+    if (globalMultiplier <= 0.0f)
+        return 1.0f;
+
+    return fixedTargetRate
+        ? targetMultiplier / globalMultiplier
+        : (targetMultiplier * tribeSizeMultiplier) / globalMultiplier;
+}
+
+int ApplyHarvestQuantityCorrection(const int originalAmount,
+                                   const float correction,
+                                   double& fractionalRemainder,
+                                   double& unroundedAmount)
+{
+    unroundedAmount = static_cast<double>(originalAmount) * correction +
+        fractionalRemainder;
+
+    if (!std::isfinite(unroundedAmount) || unroundedAmount <= 0.0)
+    {
+        fractionalRemainder = 0.0;
+        return 0;
+    }
+
+    if (unroundedAmount >= static_cast<double>(kHarvestQuantityMaxInt))
+    {
+        fractionalRemainder = 0.0;
+        return kHarvestQuantityMaxInt;
+    }
+
+    const int adjustedAmount = static_cast<int>(std::floor(unroundedAmount));
+    fractionalRemainder = unroundedAmount - adjustedAmount;
+    return adjustedAmount;
+}
+
+bool VerifyFractionalHarvestScaling()
+{
+    constexpr float kEpsilon = 0.0001f;
+    bool passed = std::abs(CalculateHarvestQuantityCorrection(10.0f, 10.0f, 1.5f, false) -
+                           1.5f) < kEpsilon;
+
+    double remainder = 0.0;
+    double unroundedAmount = 0.0;
+    passed = passed && ApplyHarvestQuantityCorrection(10, 1.5f, remainder, unroundedAmount) == 15 &&
+        std::abs(remainder) < kEpsilon;
+
+    remainder = 0.0;
+    int total = 0;
+    for (int grant = 0; grant < 10; ++grant)
+        total += ApplyHarvestQuantityCorrection(1, 1.5f, remainder, unroundedAmount);
+    passed = passed && total == 15 && std::abs(remainder) < kEpsilon;
+
+    remainder = 0.0;
+    total = 0;
+    for (int grant = 0; grant < 4; ++grant)
+        total += ApplyHarvestQuantityCorrection(1, 0.5f, remainder, unroundedAmount);
+    return passed && total == 2 && std::abs(remainder) < kEpsilon;
+}
 
 struct ScopedHarvestQuantityContext
 {
@@ -387,11 +459,17 @@ void Hook_UPrimalHarvestingComponent_GiveHarvestResource(
     AActor* harvestingActor,
     TArray<FHarvestResourceEntry, TSizedDefaultAllocator<32>>* resourceEntries)
 {
+    HarvestQuantityContext context;
+
+    // Building the context reads config/tribe data. Any exception here must
+    // never escape the hook (server crash) nor skip the original call (lost
+    // harvest) — on failure we fall back to an inactive context (no change).
+    try
+    {
     int tribeMemberCount = 0;
     const int teamId = GetHarvestingTeamId(harvestingActor, tribeMemberCount);
     const CousinCustomRates::PlayerHarvestBoost* boost =
         FindActiveBoostForHarvest(harvestingActor, teamId);
-    HarvestQuantityContext context;
 
     if (teamId != 0)
     {
@@ -420,9 +498,9 @@ void Hook_UPrimalHarvestingComponent_GiveHarvestResource(
                 context.globalMultiplier = globalMultiplier;
                 context.targetMultiplier = targetMultiplier;
                 context.tribeSizeMultiplier = sizeMultiplier;
-                context.correction = (boost && !boost->isMultiplier)
-                    ? targetMultiplier / globalMultiplier
-                    : (targetMultiplier * sizeMultiplier) / globalMultiplier;
+                context.correction = CalculateHarvestQuantityCorrection(
+                    globalMultiplier, targetMultiplier, sizeMultiplier,
+                    boost && !boost->isMultiplier);
                 context.applies = context.correction > 0.0f && context.correction != 1.0f;
 
                 if (context.applies && IsTribeHarvestBoostDebugEnabled())
@@ -435,6 +513,17 @@ void Hook_UPrimalHarvestingComponent_GiveHarvestResource(
                 }
             }
         }
+    }
+    }
+    catch (const std::exception& e)
+    {
+        context = HarvestQuantityContext{};
+        Log::GetLog()->error("GiveHarvestResource hook: context error, harvest left unmodified: {}", e.what());
+    }
+    catch (...)
+    {
+        context = HarvestQuantityContext{};
+        Log::GetLog()->error("GiveHarvestResource hook: unknown context error, harvest left unmodified.");
     }
 
     ScopedHarvestQuantityContext scopedContext(context);
@@ -464,32 +553,38 @@ int Hook_UPrimalInventoryComponent_IncrementItemTemplateQuantity(
     bool bDontBroadcastItemUpdateEvents,
     TSubclassOf<UPrimalItem> ignoreClass)
 {
+    // Adjustment is wrapped so an exception can never escape the hook or
+    // skip the original call; on failure the original amount is granted.
+    try
+    {
     if (!s_harvestQuantityContexts.empty())
     {
         const HarvestQuantityContext& context = s_harvestQuantityContexts.back();
         if (context.applies && inventoryComponent == context.destinationInventory && amount > 0 &&
             !bIsCraftingResourceConsumption && !bIsFromUseConsumption && !bIsArkTributeItem)
         {
-            // Windows headers define a function-like max macro, so use the
-            // explicit signed 32-bit integer upper bound instead.
-            constexpr int kMaxInt = 2147483647;
             const int originalAmount = amount;
-            const double adjustedAmount = static_cast<double>(amount) * context.correction;
-            if (adjustedAmount >= static_cast<double>(kMaxInt))
-                amount = kMaxInt;
-            else
-                amount = static_cast<int>(std::round(adjustedAmount));
+            double& fractionalRemainder = s_harvestQuantityRemaindersByInventory[inventoryComponent];
+            double unroundedAmount = 0.0;
+            amount = ApplyHarvestQuantityCorrection(
+                amount, context.correction, fractionalRemainder, unroundedAmount);
 
             if (IsTribeHarvestBoostDebugEnabled())
             {
                 Log::GetLog()->info(
-                    "TribeHarvestDebug: quantity adjusted. team={} tribeSize={} sizeMultiplier={} global={} target={} correction={} original={} adjusted={} inventory={}",
+                    "TribeHarvestDebug: quantity adjusted. team={} tribeSize={} sizeMultiplier={} global={} target={} correction={} original={} unrounded={} adjusted={} remainder={} inventory={}",
                     context.teamId, context.tribeMemberCount, context.tribeSizeMultiplier,
                     context.globalMultiplier, context.targetMultiplier,
-                    context.correction, originalAmount, amount,
+                    context.correction, originalAmount, unroundedAmount, amount,
+                    fractionalRemainder,
                     static_cast<const void*>(inventoryComponent));
             }
         }
+    }
+    }
+    catch (...)
+    {
+        Log::GetLog()->error("IncrementItemTemplateQuantity hook: adjustment failed, original amount kept.");
     }
 
     return UPrimalInventoryComponent_IncrementItemTemplateQuantity_original(
@@ -596,7 +691,22 @@ void AddOrRemoveTribeHarvestBoostTimer(bool addTimer = true)
 {
     if (addTimer)
         AsaApi::GetCommands().AddOnTimerCallback(
-            "CousinCustomRatesTribeBoostTimer", &TribeHarvestBoostTimerCallback);
+            "CousinCustomRatesTribeBoostTimer", []()
+            {
+                // Timer callback: never let an exception escape (server crash).
+                try
+                {
+                    TribeHarvestBoostTimerCallback();
+                }
+                catch (const std::exception& e)
+                {
+                    Log::GetLog()->error("Tribe boost timer exception: {}", e.what());
+                }
+                catch (...)
+                {
+                    Log::GetLog()->error("Tribe boost timer unknown exception.");
+                }
+            });
     else
         AsaApi::GetCommands().RemoveOnTimerCallback("CousinCustomRatesTribeBoostTimer");
 }

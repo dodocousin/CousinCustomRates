@@ -40,8 +40,15 @@
 //   timer, and does a fresh config reload (picks up any edits made between
 //   restarts).
 // ---------------------------------------------------------------------------
+// Guards against double registration of commands/timers (Plugin_Init on a
+// running server and the BeginPlay hook can both reach OnServerReady).
+static bool s_serverReadyDone = false;
+
 void OnServerReady()
 {
+	if (s_serverReadyDone) return;
+	s_serverReadyDone = true;
+
 	Log::GetLog()->info("CousinCustomRates: server ready — initialising plugin.");
 
 	// Reload config — it was already read inside the InitGame hook, but reading
@@ -84,8 +91,34 @@ DECLARE_HOOK(AShooterGameMode_BeginPlay, void, AShooterGameMode*);
 void Hook_AShooterGameMode_BeginPlay(AShooterGameMode* _this)
 {
 	AShooterGameMode_BeginPlay_original(_this);
-	RestoreQueuedStartupPreset(_this);
-	OnServerReady();
+
+	// Exceptions must never escape a hook (server crash): preset restore
+	// touches config, state files and game fields.
+	try
+	{
+		RestoreQueuedStartupPreset(_this);
+	}
+	catch (const std::exception& e)
+	{
+		Log::GetLog()->error("BeginPlay hook: preset restore failed: {}", e.what());
+	}
+	catch (...)
+	{
+		Log::GetLog()->error("BeginPlay hook: preset restore failed (unknown exception).");
+	}
+
+	try
+	{
+		OnServerReady();
+	}
+	catch (const std::exception& e)
+	{
+		Log::GetLog()->error("BeginPlay hook: OnServerReady failed: {}", e.what());
+	}
+	catch (...)
+	{
+		Log::GetLog()->error("BeginPlay hook: OnServerReady failed (unknown exception).");
+	}
 }
 
 
@@ -95,6 +128,11 @@ void Hook_AShooterGameMode_BeginPlay(AShooterGameMode* _this)
 extern "C" __declspec(dllexport) void Plugin_Init()
 {
 	Log::Get().Init(PROJECT_NAME);
+
+	if (VerifyFractionalHarvestScaling())
+		Log::GetLog()->info("Fractional harvest scaling verification passed (10 x 1.5 = 15).");
+	else
+		Log::GetLog()->error("Fractional harvest scaling verification failed; decimal tribe multipliers may be inaccurate.");
 
 	// Register the InitGame hook FIRST and EARLY — InitGame fires before
 	// BeginPlay, so this hook must be set before the game reaches that point.
@@ -127,6 +165,7 @@ extern "C" __declspec(dllexport) void Plugin_Unload()
 	// Remove the InitGame hook
 	SetHooks(false);
 	SetTribeHarvestBoostHooks(false);
+	s_harvestQuantityRemaindersByInventory.clear();
 
 	// Stop the schedule timer (safe even if it was never started)
 	SetTimers(false);
@@ -136,6 +175,7 @@ extern "C" __declspec(dllexport) void Plugin_Unload()
 	AddOrRemoveCommands(false);
 	AddReloadCommands(false);
 	AddOrRemovePlayerRateCommands(false);
+	s_serverReadyDone = false;
 
 	Log::GetLog()->info("CousinCustomRates unloaded.");
 }

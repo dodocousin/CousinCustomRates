@@ -542,7 +542,12 @@ void ReadConfig()
 		if (!file.is_open())
 			throw std::runtime_error("Cannot open config file: " + config_path);
 
-		file >> CousinCustomRates::config;
+		// Parse into a temporary so a malformed file never leaves the live
+		// config half-written (the previous config stays active on failure).
+		nlohmann::json parsed = nlohmann::json::parse(file);
+		if (!parsed.is_object())
+			throw std::runtime_error("config.json root must be a JSON object.");
+		CousinCustomRates::config = std::move(parsed);
 
 		Log::GetLog()->info("{} config loaded successfully.", PROJECT_NAME);
 
